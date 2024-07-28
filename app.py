@@ -75,6 +75,78 @@ def get_ollama_version(command, port):
     except Exception as e:
         return f"Error: {e}"
 
+def get_ollama_list(command, port):
+    try:
+        env = os.environ.copy()
+        env['OLLAMA_HOST'] = f'0.0.0.0:{port}'
+        result = subprocess.run([command, 'list'], capture_output=True, text=True, env=env)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            models = []
+            for line in lines[1:]:  # Skip header
+                parts = line.split()
+                models.append({
+                    "name": parts[0],
+                    "id": parts[1],
+                    "size": f"{parts[2]} {parts[3]}",  # Combine size and unit
+                    "modified": ' '.join(parts[4:])  # Handle spaces in the modified date
+                })
+            return models
+        else:
+            return []
+    except Exception as e:
+        print(f"Failed to list models: {e}")
+        return []
+
+def get_ollama_show(command, port, model_name):
+    try:
+        env = os.environ.copy()
+        env['OLLAMA_HOST'] = f'0.0.0.0:{port}'
+        result = subprocess.run([command, 'show', model_name], capture_output=True, text=True, env=env)
+        if result.returncode == 0:
+            details = {}
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip().lower().replace(' ', '_')
+                    value = value.strip()
+                    details[key] = value
+            return details
+        else:
+            return {}
+    except Exception as e:
+        print(f"Failed to show model {model_name}: {e}")
+        return {}
+
+def get_ollama_ps(command, port):
+    try:
+        env = os.environ.copy()
+        env['OLLAMA_HOST'] = f'0.0.0.0:{port}'
+        result = subprocess.run([command, 'ps'], capture_output=True, text=True, env=env)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            processes = []
+            for line in lines[1:]:  # Skip header
+                parts = line.split()
+                size = f"{parts[2]} {parts[3]}"  # Combine size and unit
+                processor_until = ' '.join(parts[4:]).rsplit(' ', 1)
+                processor = processor_until[0]
+                until = processor_until[1] if len(processor_until) > 1 else ""
+                processes.append({
+                    "name": parts[0],
+                    "id": parts[1],
+                    "size": size,
+                    "processor": processor,
+                    "until": until
+                })
+            return processes
+        else:
+            return []
+    except Exception as e:
+        print(f"Failed to get running models: {e}")
+        return []
+
 def format_gpu_indices(gpu_indices):
     if isinstance(gpu_indices, list):
         return gpu_indices
@@ -130,13 +202,23 @@ def ollama_info():
     ollama_services = []
     for service in config["ollama_services"]:
         version = get_ollama_version(config["ollama_command"], service["port"])
+        models_avail = get_ollama_list(config["ollama_command"], service["port"])
+        
+        # Get additional information for each model
+        for model in models_avail:
+            model_details = get_ollama_show(config["ollama_command"], service["port"], model["name"])
+            model.update(model_details)
+        
+        models_running = get_ollama_ps(config["ollama_command"], service["port"])
         service_info = {
             "service_name": service["service_name"],
             "description": service.get("description", ""),
             "port": service["port"],
             "url": service["url"],
             "gpu_indices": format_gpu_indices(service["gpu_indices"]),
-            "ollama_version": version
+            "ollama_version": version,
+            "models_avail": models_avail,
+            "models_running": models_running
         }
         ollama_services.append(service_info)
     

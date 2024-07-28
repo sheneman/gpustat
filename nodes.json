@@ -1,0 +1,6 @@
+{
+    "nodes": [
+        {"url": "http://webbyg2.hpc.uidaho.edu:8000"},
+        {"url": "http://aurora.nkn.uidaho.edu:8000"}
+    ]
+}
