@@ -197,6 +197,12 @@ def gpu_info():
         print(f"Failed to get device count: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
+
 @app.route('/ollama-info', methods=['GET'])
 def ollama_info():
     ollama_services = []
