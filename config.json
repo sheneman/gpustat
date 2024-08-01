@@ -1,51 +1,18 @@
 {
-    "node_name":  	"webbyg2.hpc.uidaho.edu",
-    "node_alias": 	"data-potato",
-    "node_description": "Large H100 Inference Server for IIDS",
+    "node_name":  	"aurora.nkn.uidaho.edu",
+    "node_alias": 	"aurora",
+    "node_description": "RTX 8000 Inference Server for IIDS",
     "ollama_command": 	"/usr/local/bin/ollama",
     "admin_email":	"admin@nkn.uidaho.edu",
     
     "ollama_services": [
         {
-            "service_name": "ollama_0",
+            "service_name": "ollama_aurora_0",
             "description": "Single large LLM",
-	    "port": "8004",
-	    "url": "http://data-potato.hpc.uidaho.edu:8004",
-            "gpu_indices": 0
-        },
-        {
-            "service_name": "ollama_1",
-            "description": "Many LLMs to choose from",
 	    "port": "8001",
-	    "url": "http://data-potato.hpc.uidaho.edu:8001",
-            "gpu_indices": 1
-        },
-        {
-
-            "service_name": "ollama_2",
-            "description": "High Throughput LLMs",
-            "port": "8002",
-	    "url": "http://data-potato.hpc.uidaho.edu:8002",
-            "gpu_indices": 2
-        },
-        {
-            "service_name": "ollama_embeddings",
-            "description": "Embedding models",
-            "port": "8003",
-	    "url": "http://data-potato.hpc.uidaho.edu:8003",
-            "gpu_indices": 2
-        }
-    ],
-
-    "other_models": [
-        {
-            "service_name": "florence-2",
-            "description": "Florence-2 Multimodal Computer Vision and Language Model",
-            "port": "8005",
-            "url": "http://data-potato.hpc.uidaho.edu:8005",
-            "gpu_indices": 0
+	    "url": "http://aurora.nkn.uidaho.edu:8001",
+            "gpu_indices": [0,1]
         }
     ]
-	
 }
 
