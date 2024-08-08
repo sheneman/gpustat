@@ -3,11 +3,15 @@ from flask_cors import CORS
 import requests
 import json
 import itertools
+import logging
+from datetime import datetime
+import time
 
 app = Flask(__name__)
 CORS(app)
 
 CONFIG_FILE = "nodes.json"
+LOG_FILE = "requests.log"
 
 # Load configuration
 with open(CONFIG_FILE, 'r') as config_file:
@@ -133,6 +137,16 @@ def get_ollama_instances_with_model(model_name):
 
     return instances
 
+# Function to log requests in jsonl format
+def log_request(log_data):
+    with open(LOG_FILE, 'a') as log_file:
+        log_file.write(json.dumps(log_data) + '\n')
+
+# Function to extract prompt length from the request data
+def extract_prompt_length(messages):
+    prompt = ' '.join([msg.get('content', '') for msg in messages])
+    return len(prompt.split())
+
 # Endpoint to get GPU information from all nodes
 @app.route('/gpu-info', methods=['GET'])
 def gpu_info():
@@ -184,20 +198,47 @@ def chat_completion():
     try:
         data = request.json
         model_name = data.get('model')
-        
+        prompt_words = extract_prompt_length(data.get('messages', []))
+        prompt_tokens = int(prompt_words * 1.5)
+        client_ip = request.remote_addr
+        request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         if model_name not in round_robin_iterators:
             instances = get_ollama_instances_with_model(model_name)
             round_robin_iterators[model_name] = round_robin(instances)
         
         instance_url = next(round_robin_iterators[model_name])
+        model_loaded = instance_url is not None
+        
+        start_time = time.time()
         
         def generate():
             response_stream = fetch_data_from_node(instance_url, 'api/chat', payload=data, method='POST', stream=True)
             if response_stream:
+                response_content = []
                 for chunk in response_stream:
+                    response_content.append(chunk)
                     yield chunk
+                response_complete = b''.join(response_content).decode().split()
+                completion_tokens = len(response_complete)
             else:
+                completion_tokens = 0
                 yield json.dumps({"error": "Failed to get response from Ollama instance"}).encode()
+
+            end_time = time.time()
+            total_tokens = prompt_tokens + completion_tokens
+            log_data = {
+                "timestamp": request_time,
+                "ip_address": client_ip,
+                "model": model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "inference_server": instance_url,
+                "model_loaded": model_loaded,
+                "response_time_ms": int((end_time - start_time) * 1000)
+            }
+            log_request(log_data)
 
         return Response(stream_with_context(generate()), content_type='application/json')
     except Exception as e:
@@ -209,20 +250,101 @@ def generate():
     try:
         data = request.json
         model_name = data.get('model')
-        
+        prompt_words = extract_prompt_length(data.get('messages', []))
+        prompt_tokens = int(prompt_words * 1.5)
+        client_ip = request.remote_addr
+        request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         if model_name not in round_robin_iterators:
             instances = get_ollama_instances_with_model(model_name)
             round_robin_iterators[model_name] = round_robin(instances)
         
         instance_url = next(round_robin_iterators[model_name])
+        model_loaded = instance_url is not None
+        
+        start_time = time.time()
         
         def generate():
             response_stream = fetch_data_from_node(instance_url, 'api/generate', payload=data, method='POST', stream=True)
             if response_stream:
+                response_content = []
                 for chunk in response_stream:
+                    response_content.append(chunk)
                     yield chunk
+                response_complete = b''.join(response_content).decode().split()
+                completion_tokens = len(response_complete)
             else:
+                completion_tokens = 0
                 yield json.dumps({"error": "Failed to get response from Ollama instance"}).encode()
+
+            end_time = time.time()
+            total_tokens = prompt_tokens + completion_tokens
+            log_data = {
+                "timestamp": request_time,
+                "ip_address": client_ip,
+                "model": model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "inference_server": instance_url,
+                "model_loaded": model_loaded,
+                "response_time_ms": int((end_time - start_time) * 1000)
+            }
+            log_request(log_data)
+
+        return Response(stream_with_context(generate()), content_type='application/json')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Endpoint for OpenAI-style chat completions with streaming
+@app.route('/v1/chat/completions', methods=['POST'])
+def openai_chat_completions():
+    try:
+        data = request.json
+        model_name = data.get('model')
+        messages = data.get('messages', [])
+        prompt_words = extract_prompt_length(messages)
+        prompt_tokens = int(prompt_words * 1.5)
+        client_ip = request.remote_addr
+        request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if model_name not in round_robin_iterators:
+            instances = get_ollama_instances_with_model(model_name)
+            round_robin_iterators[model_name] = round_robin(instances)
+
+        instance_url = next(round_robin_iterators[model_name])
+        model_loaded = instance_url is not None
+
+        start_time = time.time()
+
+        def generate():
+            response_stream = fetch_data_from_node(instance_url, 'v1/chat/completions', payload=data, method='POST', stream=True)
+            if response_stream:
+                response_content = []
+                for chunk in response_stream:
+                    response_content.append(chunk)
+                    yield chunk
+                response_data = json.loads(b''.join(response_content).decode())
+                completion_tokens = response_data['usage']['completion_tokens']
+                total_tokens = response_data['usage']['total_tokens']
+            else:
+                completion_tokens = 0
+                total_tokens = prompt_tokens
+                yield json.dumps({"error": "Failed to get response from Ollama instance"}).encode()
+
+            end_time = time.time()
+            log_data = {
+                "timestamp": request_time,
+                "ip_address": client_ip,
+                "model": model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "inference_server": instance_url,
+                "model_loaded": model_loaded,
+                "response_time_ms": int((end_time - start_time) * 1000)
+            }
+            log_request(log_data)
 
         return Response(stream_with_context(generate()), content_type='application/json')
     except Exception as e:
