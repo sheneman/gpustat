@@ -224,7 +224,12 @@ def ollama_info():
             "gpu_indices": format_gpu_indices(service["gpu_indices"]),
             "ollama_version": version,
             "models_avail": models_avail,
-            "models_running": models_running
+            "models_running": models_running,
+            "OLLAMA_KEEP_ALIVE": service.get("OLLAMA_KEEP_ALIVE", ""),
+            "OLLAMA_MAX_QUEUE": service.get("OLLAMA_MAX_QUEUE", ""),
+            "OLLAMA_NUM_PARALLEL": service.get("OLLAMA_NUM_PARALLEL", ""),
+            "OLLAMA_MAX_LOADED_MODELS": service.get("OLLAMA_MAX_LOADED_MODELS", ""),
+            "OLLAMA_MODELS": service.get("OLLAMA_MODELS", "")
         }
         ollama_services.append(service_info)
     

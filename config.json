@@ -11,7 +11,12 @@
             "description": "Single large LLM",
 	    "port": "8001",
 	    "url": "http://aurora.nkn.uidaho.edu:8001",
-            "gpu_indices": [0,1]
+            "gpu_indices": [0,1],
+            "OLLAMA_KEEP_ALIVE": -1,
+            "OLLAMA_MAX_QUEUE": 64,
+            "OLLAMA_NUM_PARALLEL": 8,
+            "OLLAMA_MAX_LOADED_MODELS": 8,
+            "OLLAMA_MODELS": "/space/ollama/models"
         }
     ]
 }
