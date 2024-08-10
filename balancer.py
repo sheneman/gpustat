@@ -116,7 +116,7 @@ def extract_prompt_length(messages):
     prompt = ' '.join([msg.get('content', '') for msg in messages])
     return len(prompt.split())
 
-# Function to process a single request
+
 def process_single_request(request_data):
     print("process_single_request()")  # Keep this print statement
     print(request_data)
@@ -144,8 +144,15 @@ def process_single_request(request_data):
 
     start_time = time.time()
 
+    # Determine the endpoint to use based on the incoming request path
+    if '/v1/chat/completions' in request_data['request_path']:
+        backend_endpoint = 'v1/chat/completions'
+    else:
+        backend_endpoint = 'api/chat'
+
     response_content = []
-    response_stream = fetch_data_from_node(instance_url, 'api/chat', payload=data, method='POST', stream=True)
+    response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
+    
     if response_stream:
         for line in response_stream:
             if line:
@@ -158,7 +165,7 @@ def process_single_request(request_data):
         completion_tokens = sum(len(resp.get('content', '').split()) for resp in response_content if 'content' in resp)
     else:
         completion_tokens = 0
-        error_response = json.dumps({"error": "Failed to get response from Ollama instance"})
+        error_response = json.dumps({"error": "Failed to get response from LLM instance"})
         yield error_response + '\n'
 
     end_time = time.time()
@@ -264,7 +271,8 @@ def get_models_from_ollama_instances():
 
     return all_models_sorted
 
-# Endpoint for chat completions with streaming
+
+# In the chat_completion function (if necessary)
 @app.route('/api/chat', methods=['POST'])
 def chat_completion():
     try:
@@ -273,6 +281,7 @@ def chat_completion():
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        request_path = request.path  # Capture the request path
 
         print(f"Request data: {data}")  # Debug print
 
@@ -281,7 +290,8 @@ def chat_completion():
                 "data": data,
                 "model_name": model_name,
                 "client_ip": client_ip,
-                "request_time": request_time
+                "request_time": request_time,
+                "request_path": request_path  # Include the request path in the request data
             }):
                 yield chunk
 
@@ -289,6 +299,7 @@ def chat_completion():
     except Exception as e:
         print(f"Error in chat_completion: {str(e)}")  # Debug print
         return jsonify({"error": str(e)}), 500
+
 
 # Endpoint for generate requests with streaming
 @app.route('/api/generate', methods=['POST'])
@@ -316,7 +327,8 @@ def generate():
         print(f"Error in generate: {str(e)}")  # Debug print
         return jsonify({"error": str(e)}), 500
 
-# Endpoint for OpenAI-style chat completions with streaming
+
+# In the openai_chat_completions function
 @app.route('/v1/chat/completions', methods=['POST'])
 def openai_chat_completions():
     try:
@@ -325,6 +337,7 @@ def openai_chat_completions():
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        request_path = request.path  # Capture the request path
 
         print(f"Request data: {data}")  # Debug print
 
@@ -333,7 +346,8 @@ def openai_chat_completions():
                 "data": data,
                 "model_name": model_name,
                 "client_ip": client_ip,
-                "request_time": request_time
+                "request_time": request_time,
+                "request_path": request_path  # Include the request path in the request data
             }):
                 yield chunk
 
