@@ -349,10 +349,12 @@ def gpu_info():
         print("Received request for GPU info")  # Debug print
         gpu_info_list, _ = aggregate_data()
         print(f"Returning GPU info for {len(gpu_info_list)} nodes")  # Debug print
-        return jsonify(gpu_info_list)
+        pretty_json = json.dumps(gpu_info_list, indent=4)
+        return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in gpu_info: {str(e)}")  # Debug print
-        return jsonify({"error": str(e)}), 500
+        error_json = json.dumps({"error": str(e)}, indent=4)
+        return Response(error_json, mimetype='application/json'), 500
 
 # Endpoint to get Ollama information from all nodes
 @app.route('/ollama-info', methods=['GET'])
@@ -361,10 +363,12 @@ def ollama_info():
         print("Received request for Ollama info")  # Debug print
         _, ollama_info_list = aggregate_data()
         print(f"Returning Ollama info for {len(ollama_info_list)} nodes")  # Debug print
-        return jsonify(ollama_info_list)
+        pretty_json = json.dumps(ollama_info_list, indent=4)
+        return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in ollama_info: {str(e)}")  # Debug print
-        return jsonify({"error": str(e)}), 500
+        error_json = json.dumps({"error": str(e)}, indent=4)
+        return Response(error_json, mimetype='application/json'), 500
 
 # Endpoint to list all nodes with their health status
 @app.route('/list-nodes', methods=['GET'])
@@ -373,10 +377,12 @@ def list_nodes():
         print("Received request to list nodes")  # Debug print
         nodes_status = [{"node": node["url"], "health": check_node_health(node["url"])} for node in config["nodes"]]
         print(f"Returning status for {len(nodes_status)} nodes")  # Debug print
-        return jsonify({"nodes": nodes_status})
+        pretty_json = json.dumps({"nodes": nodes_status}, indent=4)
+        return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in list_nodes: {str(e)}")  # Debug print
-        return jsonify({"error": str(e)}), 500
+        error_json = json.dumps({"error": str(e)}, indent=4)
+        return Response(error_json, mimetype='application/json'), 500
 
 # Endpoint to collect and aggregate hierarchical information
 @app.route('/collect-info', methods=['GET'])
@@ -385,10 +391,12 @@ def collect_info():
         print("Received request to collect hierarchical info")  # Debug print
         aggregated_info = aggregate_hierarchical_data()
         print(f"Returning aggregated info for {len(aggregated_info)} nodes")  # Debug print
-        return Response(json.dumps(aggregated_info, indent=4), mimetype='application/json')
+        pretty_json = json.dumps(aggregated_info, indent=4)
+        return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in collect_info: {str(e)}")  # Debug print
-        return jsonify({"error": str(e)}), 500
+        error_json = json.dumps({"error": str(e)}, indent=4)
+        return Response(error_json, mimetype='application/json'), 500
 
 # Endpoint to get models from all Ollama instances and de-duplicate
 @app.route('/api/tags', methods=['GET'])
@@ -397,10 +405,12 @@ def get_models():
         print("Received request for model tags")  # Debug print
         all_models = get_models_from_ollama_instances()
         print(f"Returning {len(all_models)} unique models")  # Debug print
-        return jsonify({"models": all_models})
+        pretty_json = json.dumps({"models": all_models}, indent=4)
+        return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in get_models: {str(e)}")  # Debug print
-        return jsonify({"error": str(e)}), 500
+        error_json = json.dumps({"error": str(e)}, indent=4)
+        return Response(error_json, mimetype='application/json'), 500
 
 if __name__ == '__main__':
     print("Starting the Flask application")  # Debug print
