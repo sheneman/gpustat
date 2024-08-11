@@ -116,36 +116,35 @@ def extract_prompt_length(messages):
     prompt = ' '.join([msg.get('content', '') for msg in messages])
     return len(prompt.split())
 
-
 def process_single_request(request_data):
-    print("process_single_request()")  # Keep this print statement
+    print("process_single_request()")
     print(request_data)
 
     data = request_data['data']
     model_name = request_data['model_name']
     client_ip = request_data['client_ip']
     request_time = request_data['request_time']
+    request_path = request_data['request_path']
 
-    print(f"Processing request for model: {model_name}")  # Debug print
+    print(f"Processing request for model: {model_name}")
 
     if model_name not in round_robin_iterators:
-        print(f"Creating new round-robin iterator for {model_name}")  # Debug print
+        print(f"Creating new round-robin iterator for {model_name}")
         instances = get_ollama_instances_with_model(model_name)
         if not instances:
-            print(f"No instances found for model {model_name}")  # Debug print
-            yield json.dumps({"error": f"No instances available for model {model_name}"}) + '\n'
+            print(f"No instances found for model {model_name}")
+            yield '{"error": "No instances available for model"}\n\n'
             return
         round_robin_iterators[model_name] = round_robin(instances)
 
     instance_url = next(round_robin_iterators[model_name])
     model_loaded = instance_url is not None
 
-    print(f"Selected instance: {instance_url}")  # Debug print
+    print(f"Selected instance: {instance_url}")
 
     start_time = time.time()
 
-    # Determine the endpoint to use based on the incoming request path
-    if '/v1/chat/completions' in request_data['request_path']:
+    if '/v1/chat/completions' in request_path:
         backend_endpoint = 'v1/chat/completions'
     else:
         backend_endpoint = 'api/chat'
@@ -154,34 +153,55 @@ def process_single_request(request_data):
     response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
     
     if response_stream:
-        for line in response_stream:
-            if line:
-                try:
-                    parsed_line = json.loads(line)
-                    response_content.append(parsed_line)
-                    yield json.dumps(parsed_line) + '\n'
-                except json.JSONDecodeError:
-                    print(f"Error parsing JSON: {line}")
-        completion_tokens = sum(len(resp.get('content', '').split()) for resp in response_content if 'content' in resp)
+        try:
+            for line in response_stream:
+                if line:
+                    line = line.decode('utf-8').strip()
+                    print(f"Received line: {line}")  # Debug print
+
+                    if line == "[DONE]":
+                        print("Received end-of-stream marker")
+                        yield '[DONE]\n\n'
+                        break
+
+                    try:
+                        parsed_line = json.loads(line)
+                        response_content.append(parsed_line)
+                        yield f"{json.dumps(parsed_line)}\n\n"  # Removed 'data: ' prefix
+                    except json.JSONDecodeError:
+                        print(f"Non-JSON data received: {line}")
+                        yield f"{line}\n\n"  # Removed 'data: ' prefix
+
+            # Final check to ensure all data is sent and the stream is closed correctly
+            if not response_stream or response_content:
+                yield '[DONE]\n\n'
+        except Exception as e:
+            print(f"Error during streaming: {str(e)}")
+            yield f"[ERROR] Streaming interrupted: {str(e)}\n\n"
+            yield '[DONE]\n\n'
     else:
-        completion_tokens = 0
-        error_response = json.dumps({"error": "Failed to get response from LLM instance"})
-        yield error_response + '\n'
+        print("No response stream available from node")
+        yield '{"error": "Failed to get response from LLM instance"}\n\n'
+        yield '[DONE]\n\n'
 
     end_time = time.time()
-    total_tokens = extract_prompt_length(data.get('messages', [])) + completion_tokens
+    total_tokens = extract_prompt_length(data.get('messages', [])) + sum(
+        len(resp.get('content', '').split()) for resp in response_content if 'content' in resp)
     log_data = {
         "timestamp": request_time,
         "ip_address": client_ip,
         "model": model_name,
         "prompt_tokens": extract_prompt_length(data.get('messages', [])),
-        "completion_tokens": completion_tokens,
+        "completion_tokens": total_tokens - extract_prompt_length(data.get('messages', [])),
         "total_tokens": total_tokens,
         "inference_server": instance_url,
         "model_loaded": model_loaded,
         "response_time_ms": int((end_time - start_time) * 1000)
     }
     log_request(log_data)
+
+
+
 
 # Function to process the request queue
 def process_queue():
@@ -271,34 +291,40 @@ def get_models_from_ollama_instances():
 
     return all_models_sorted
 
-
-# In the chat_completion function (if necessary)
 @app.route('/api/chat', methods=['POST'])
 def chat_completion():
     try:
-        print("Received chat completion request")  # Debug print
+        print("Received chat completion request")
         data = request.json
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        request_path = request.path  # Capture the request path
+        request_path = request.path
 
-        print(f"Request data: {data}")  # Debug print
+        print(f"Request data: {data}")
 
         def generate():
-            for chunk in process_single_request({
-                "data": data,
-                "model_name": model_name,
-                "client_ip": client_ip,
-                "request_time": request_time,
-                "request_path": request_path  # Include the request path in the request data
-            }):
-                yield chunk
+            try:
+                for chunk in process_single_request({
+                    "data": data,
+                    "model_name": model_name,
+                    "client_ip": client_ip,
+                    "request_time": request_time,
+                    "request_path": request_path
+                }):
+                    yield chunk
+            except GeneratorExit:
+                print("Client closed connection prematurely")
+            except Exception as e:
+                print(f"Unexpected error in streaming: {str(e)}")
+                yield f'data: [ERROR] Unexpected error: {str(e)}\n\n'
+                yield 'data: [DONE]\n\n'
 
-        return Response(generate(), mimetype='application/json', content_type='application/json')
+        return Response(generate(), mimetype='text/event-stream', headers={'Connection': 'keep-alive'})
     except Exception as e:
-        print(f"Error in chat_completion: {str(e)}")  # Debug print
+        print(f"Error in chat_completion: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 
 # Endpoint for generate requests with streaming

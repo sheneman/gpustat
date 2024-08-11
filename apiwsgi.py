@@ -2,7 +2,7 @@
 wsgi.py imports and starts our entire app
 """
 # Path to the virtual env associated with this app
-python_home = '/home/gpustat/venv/'
+python_home = '/html/mindrouter/venv/'
 
 import sys
 import site
@@ -17,4 +17,4 @@ site_packages = python_home + '/lib/python%s/site-packages' % python_version
 site.addsitedir(site_packages)
 
 # Import our create_app function from our package
-from app import app as application
+from balancer import app as application

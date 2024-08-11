@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const gpuList = document.getElementById('gpu-list');
     const modelsList = document.getElementById('models-list');
     const gpuChartCtx = document.getElementById('gpu-chart').getContext('2d');
-    const BALANCER_API_BASE_URL = 'http://aurora.nkn.uidaho.edu:8009';
+    const BALANCER_API_BASE_URL = 'https://mindrouter-api.nkn.uidaho.edu';
     let gpuChartInstance = null;
 
     const fetchData = async () => {
