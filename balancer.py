@@ -97,7 +97,7 @@ def get_ollama_instances_with_model(model_name):
             print(f"Checking endpoint: {endpoint}")  # Debug print
             node_models = fetch_data_from_node(endpoint, "api/tags")
             if node_models:
-                print(f"Models found: {node_models}")  # Debug print
+                #print(f"Models found: {node_models}")  # Debug print
                 for model in node_models.get("models", []):
                     if model["name"] == model_name:
                         instances.append(endpoint)
@@ -118,7 +118,7 @@ def extract_prompt_length(messages):
 
 def process_single_request(request_data):
     print("process_single_request()")
-    print(request_data)
+    #print(request_data)
 
     data = request_data['data']
     model_name = request_data['model_name']
@@ -157,7 +157,7 @@ def process_single_request(request_data):
             for line in response_stream:
                 if line:
                     line = line.decode('utf-8').strip()
-                    print(f"Received line: {line}")  # Debug print
+                    #print(f"Received line: {line}")  # Debug print
 
                     if line == "[DONE]":
                         print("Received end-of-stream marker")
@@ -209,7 +209,7 @@ def process_queue():
     while True:
         request_data = None
         with queue_lock:
-            print("HERE A - request_queue has length: %d" % request_queue.qsize())  # keep this print statement
+            #print("HERE A - request_queue has length: %d" % request_queue.qsize())  # keep this print statement
             if not request_queue.empty():
                 request_data = request_queue.get()
         
@@ -301,7 +301,7 @@ def chat_completion():
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         request_path = request.path
 
-        print(f"Request data: {data}")
+        #print(f"Request data: {data}")
 
         def generate():
             try:
