@@ -6,9 +6,6 @@ import itertools
 import logging
 from datetime import datetime
 import time
-import threading
-from queue import Queue
-from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app)
@@ -34,15 +31,6 @@ def round_robin(iterable):
 # Create round-robin iterator for each model
 round_robin_iterators = {}
 
-# Queue to hold requests when all inference servers are busy
-request_queue = Queue()
-
-# Lock for thread-safe queue operations
-queue_lock = threading.Lock()
-
-# ThreadPoolExecutor for handling concurrent requests
-executor = ThreadPoolExecutor(max_workers=10)  # Adjust the number of workers as needed
-
 # Function to fetch data from a given node
 def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=False):
     print(f"Fetching data from {node_url}/{endpoint}")  # Debug print
@@ -52,12 +40,12 @@ def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=
         else:
             response = requests.get(f"{node_url}/{endpoint}", stream=stream)
         
-        print(f"Response status code: {response.status_code}")  # Debug print
         if response.status_code == 200:
             if stream:
                 return response.iter_lines()
             return response.json()
         else:
+            print(f"Response status code: {response.status_code}")  # Debug print
             print(f"Error response: {response.text}")  # Debug print
             return None
     except Exception as e:
@@ -74,37 +62,156 @@ def check_node_health(node_url):
         print(f"Failed to check health of {node_url}: {e}")
         return False
 
-# Function to get Ollama instance endpoints from a node
+# Function to get Ollama instance endpoints from a node and associate with agent endpoint
 def get_ollama_endpoints(node_url):
     print(f"Getting Ollama endpoints for {node_url}")  # Debug print
     ollama_info = fetch_data_from_node(node_url, "ollama-info")
     if ollama_info and "ollama_services" in ollama_info:
-        endpoints = [service["url"] for service in ollama_info["ollama_services"]]
+        endpoints = {service["url"]: node_url for service in ollama_info["ollama_services"]}
         print(f"Found endpoints: {endpoints}")  # Debug print
         return endpoints
     print(f"No Ollama services found for {node_url}")  # Debug print
-    return []
+    return {}
 
-# Function to get Ollama instances that have the specified model
 def get_ollama_instances_with_model(model_name):
     print(f"Getting Ollama instances for model: {model_name}")  # Debug print
-    instances = []
+    utilization_threshold = 25.0
+    instances_with_agents = {}  # Initialize the dictionary
 
     for node in config["nodes"]:
         print(f"Checking node: {node['url']}")  # Debug print
-        ollama_endpoints = get_ollama_endpoints(node["url"])
-        for endpoint in ollama_endpoints:
-            print(f"Checking endpoint: {endpoint}")  # Debug print
-            node_models = fetch_data_from_node(endpoint, "api/tags")
-            if node_models:
-                #print(f"Models found: {node_models}")  # Debug print
-                for model in node_models.get("models", []):
-                    if model["name"] == model_name:
-                        instances.append(endpoint)
-                        print(f"Added instance: {endpoint}")  # Debug print
+        ollama_info = fetch_data_from_node(node["url"], "ollama-info")
 
-    print(f"Instances with model {model_name}: {instances}")  # Debug print
-    return instances
+        if not ollama_info:
+            print(f"Failed to retrieve Ollama info from {node['url']}")
+            continue
+
+        for service in ollama_info.get("ollama_services", []):
+            ollama_url = service["url"]
+            gpu_indices = service.get("gpu_indices", [])
+
+            # Check if the requested model is supported by this service
+            models_avail = [model["name"] for model in service.get("models_avail", [])]
+            if model_name in models_avail:
+                # Now that we know the model is available, retrieve GPU info
+                gpu_info = fetch_data_from_node(node["url"], "gpu-info")
+                
+                if not gpu_info:
+                    print(f"Failed to retrieve GPU info from {node['url']}")
+                    continue
+
+                # Filter GPU utilization based on the indices associated with this Ollama instance
+                relevant_gpus = [gpu for gpu in gpu_info.get("gpus", []) if gpu["index"] in gpu_indices]
+
+                # Calculate average utilization for the relevant GPUs
+                if relevant_gpus:
+                    total_utilization = sum(gpu.get("utilization", 0) for gpu in relevant_gpus)
+                    average_utilization = total_utilization / len(relevant_gpus)
+                else:
+                    average_utilization = float('inf')
+
+                print(f"Added instance: {ollama_url} with agent: {node['url']} and GPU utilization: {average_utilization}%")
+                
+                # Store the instance data
+                instances_with_agents[ollama_url] = {
+                    "agent_url": node["url"],
+                    "gpu_indices": gpu_indices,
+                    "average_utilization": average_utilization
+                }
+
+                # If the GPU utilization is under the threshold, stop and return this instance
+                if average_utilization < utilization_threshold:
+                    print(f"Selected instance with GPU utilization under {utilization_threshold}%: {ollama_url} ({average_utilization}%)")
+                    return {
+                        ollama_url: {
+                            "agent_url": node["url"],
+                            "gpu_indices": gpu_indices,
+                            "average_utilization": average_utilization
+                        }
+                    }
+            else:
+                print(f"Model {model_name} not available on {ollama_url}, skipping GPU info retrieval.")
+
+    # If no suitable instance is found during the loop, return all instances with their details
+    print(f"No instance met the threshold during the initial scan.")
+    return instances_with_agents  # This is now a valid return statement
+
+
+
+# Function to get running models on an Ollama instance
+def get_running_models(instance_url):
+    running_models = fetch_data_from_node(instance_url, "api/ps")
+    if running_models and "models" in running_models:
+        return [model["name"] for model in running_models["models"]]
+    return []
+
+# Function to get GPU utilization of an instance
+def get_gpu_utilization(agent_url):
+    gpu_info = fetch_data_from_node(agent_url, "gpu-info")
+    if gpu_info:
+        try:
+            print(f"GPU info received: {gpu_info}")  # Debug print
+            
+            gpus = gpu_info.get("gpus", [])
+            if not gpus:
+                print("No GPU information available.")
+                return float('inf')
+
+            # Calculate average utilization across all GPUs
+            total_utilization = sum(gpu.get("utilization", 0) for gpu in gpus)
+            average_utilization = total_utilization / len(gpus)
+
+            return average_utilization
+        except KeyError as e:
+            print(f"Error parsing GPU utilization: {e}")
+            return float('inf')
+    else:
+        print(f"Failed to retrieve GPU utilization from {agent_url}.")
+        return float('inf')  # Return a high value if GPU utilization cannot be fetched
+
+
+def get_optimal_ollama_instance(model_name):
+    print(f"Getting optimal Ollama instance for model: {model_name}")  # Debug print
+    instances_with_agents = get_ollama_instances_with_model(model_name)
+    
+    if not instances_with_agents:
+        print(f"No instances found for model {model_name}")
+        return None
+
+    # Define the GPU utilization threshold
+    utilization_threshold = 25.0
+
+    optimal_instance = None
+    lowest_utilization = float('inf')
+
+    for ollama_url, instance_data in instances_with_agents.items():
+        running_models = get_running_models(ollama_url)
+        is_running = model_name in running_models
+        gpu_utilization = instance_data["average_utilization"]
+
+        print(f"Instance: {ollama_url}")
+        print(f"  Agent: {instance_data['agent_url']}")
+        print(f"  Model running: {'Yes' if is_running else 'No'}")
+        print(f"  GPU utilization: {gpu_utilization}%")
+
+        # Check if the model is running and GPU utilization is below the threshold
+        if is_running and gpu_utilization < utilization_threshold:
+            print(f"Selected instance with GPU utilization under {utilization_threshold}%: {ollama_url} ({gpu_utilization}%)")
+            return ollama_url
+
+        # Keep track of the instance with the lowest GPU utilization
+        if gpu_utilization < lowest_utilization:
+            optimal_instance = ollama_url
+            lowest_utilization = gpu_utilization
+
+    # If no instance met the threshold, select the one with the lowest utilization
+    if optimal_instance:
+        print(f"No instance met the threshold; selected instance with lowest GPU utilization: {optimal_instance} ({lowest_utilization}%)")
+        return optimal_instance
+
+    print("No suitable instance found")
+    return None
+
 
 # Function to log requests in jsonl format
 def log_request(log_data):
@@ -116,9 +223,9 @@ def extract_prompt_length(messages):
     prompt = ' '.join([msg.get('content', '') for msg in messages])
     return len(prompt.split())
 
+
 def process_single_request(request_data):
     print("process_single_request()")
-    #print(request_data)
 
     data = request_data['data']
     model_name = request_data['model_name']
@@ -128,61 +235,79 @@ def process_single_request(request_data):
 
     print(f"Processing request for model: {model_name}")
 
-    if model_name not in round_robin_iterators:
-        print(f"Creating new round-robin iterator for {model_name}")
-        instances = get_ollama_instances_with_model(model_name)
-        if not instances:
-            print(f"No instances found for model {model_name}")
-            yield '{"error": "No instances available for model"}\n\n'
-            return
-        round_robin_iterators[model_name] = round_robin(instances)
+    # Get the optimal instance with the new greedy approach
+    optimal_instance_data = get_ollama_instances_with_model(model_name)
+    if not optimal_instance_data:
+        print(f"No instances available for model {model_name}")
+        yield '{"error": "No instances available for model"}\n'
+        return
 
-    instance_url = next(round_robin_iterators[model_name])
-    model_loaded = instance_url is not None
+    # Extract the instance URL
+    instance_url = next(iter(optimal_instance_data))
+    instance_info = optimal_instance_data[instance_url]
 
     print(f"Selected instance: {instance_url}")
 
     start_time = time.time()
 
+    # Determine the backend endpoint based on the request path
     if '/v1/chat/completions' in request_path:
         backend_endpoint = 'v1/chat/completions'
+        format_sse = True  # Flag to determine if Server-Sent Events (SSE) formatting is needed
     else:
         backend_endpoint = 'api/chat'
+        format_sse = False  # No SSE formatting needed
 
     response_content = []
     response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
-    
+
     if response_stream:
         try:
             for line in response_stream:
                 if line:
                     line = line.decode('utf-8').strip()
-                    #print(f"Received line: {line}")  # Debug print
 
-                    if line == "[DONE]":
-                        print("Received end-of-stream marker")
-                        yield '[DONE]\n\n'
-                        break
+                    if format_sse:
+                        # For SSE format (used by /v1/chat/completions)
+                        if line.startswith("data:"):
+                            line = line[len("data:"):].strip()  # Remove "data:" prefix
 
-                    try:
-                        parsed_line = json.loads(line)
-                        response_content.append(parsed_line)
-                        yield f"{json.dumps(parsed_line)}\n\n"  # Removed 'data: ' prefix
-                    except json.JSONDecodeError:
-                        print(f"Non-JSON data received: {line}")
-                        yield f"{line}\n\n"  # Removed 'data: ' prefix
+                        if line == "[DONE]":
+                            print("Received end-of-stream marker")
+                            yield 'data: [DONE]\n\n'
+                            break
 
-            # Final check to ensure all data is sent and the stream is closed correctly
-            if not response_stream or response_content:
-                yield '[DONE]\n\n'
+                        try:
+                            parsed_line = json.loads(line)
+                            response_content.append(parsed_line)
+                            yield f"data: {json.dumps(parsed_line)}\n\n"
+                        except json.JSONDecodeError:
+                            print(f"Non-JSON or empty line received: {line}")
+                            yield f"data: {line}\n\n"
+                    else:
+                        # For /api/chat (no SSE format)
+                        try:
+                            parsed_line = json.loads(line)
+                            response_content.append(parsed_line)
+                            # Yield the JSON object with a newline separator
+                            yield f"{json.dumps(parsed_line)}\n"
+                        except json.JSONDecodeError:
+                            print(f"Non-JSON or empty line received: {line}")
+                            yield f"{line}\n"
+
         except Exception as e:
             print(f"Error during streaming: {str(e)}")
-            yield f"[ERROR] Streaming interrupted: {str(e)}\n\n"
-            yield '[DONE]\n\n'
+            if format_sse:
+                yield f"data: [ERROR] Streaming interrupted: {str(e)}\n\n"
+                yield 'data: [DONE]\n\n'
+            else:
+                yield f'{{"error": "Streaming interrupted: {str(e)}"}}\n'
     else:
         print("No response stream available from node")
-        yield '{"error": "Failed to get response from LLM instance"}\n\n'
-        yield '[DONE]\n\n'
+        if format_sse:
+            yield 'data: {"error": "Failed to get response from LLM instance"}\n\n'
+        else:
+            yield '{"error": "Failed to get response from LLM instance"}\n'
 
     end_time = time.time()
     total_tokens = extract_prompt_length(data.get('messages', [])) + sum(
@@ -195,35 +320,12 @@ def process_single_request(request_data):
         "completion_tokens": total_tokens - extract_prompt_length(data.get('messages', [])),
         "total_tokens": total_tokens,
         "inference_server": instance_url,
-        "model_loaded": model_loaded,
+        "model_loaded": True,
         "response_time_ms": int((end_time - start_time) * 1000)
     }
     log_request(log_data)
 
 
-
-
-# Function to process the request queue
-def process_queue():
-    print("process_queue()")  # Keep this print statement
-    while True:
-        request_data = None
-        with queue_lock:
-            #print("HERE A - request_queue has length: %d" % request_queue.qsize())  # keep this print statement
-            if not request_queue.empty():
-                request_data = request_queue.get()
-        
-        if request_data:
-            executor.submit(process_single_request, request_data)
-        
-        time.sleep(1.1)  # Reduced sleep time for more frequent checks
-
-# Function to run process_queue in a separate thread
-def run_queue_processor():
-    threading.Thread(target=process_queue, daemon=True).start()
-
-# Start the queue processing
-run_queue_processor()
 
 # Function to aggregate data from all nodes
 def aggregate_data():
@@ -291,6 +393,7 @@ def get_models_from_ollama_instances():
 
     return all_models_sorted
 
+
 @app.route('/api/chat', methods=['POST'])
 def chat_completion():
     try:
@@ -300,8 +403,6 @@ def chat_completion():
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         request_path = request.path
-
-        #print(f"Request data: {data}")
 
         def generate():
             try:
@@ -317,10 +418,9 @@ def chat_completion():
                 print("Client closed connection prematurely")
             except Exception as e:
                 print(f"Unexpected error in streaming: {str(e)}")
-                yield f'data: [ERROR] Unexpected error: {str(e)}\n\n'
-                yield 'data: [DONE]\n\n'
+                yield f'{{"error": "Unexpected error: {str(e)}"}}\n'
 
-        return Response(generate(), mimetype='text/event-stream', headers={'Connection': 'keep-alive'})
+        return Response(generate(), mimetype='application/json', content_type='application/json')
     except Exception as e:
         print(f"Error in chat_completion: {str(e)}")
         return jsonify({"error": str(e)}), 500
@@ -337,7 +437,7 @@ def generate():
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        print(f"Request data: {data}")  # Debug print
+        #print(f"Request data: {data}")  # Debug print
 
         def generate():
             for chunk in process_single_request({
@@ -365,7 +465,7 @@ def openai_chat_completions():
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         request_path = request.path  # Capture the request path
 
-        print(f"Request data: {data}")  # Debug print
+        #print(f"Request data: {data}")  # Debug print
 
         def generate():
             for chunk in process_single_request({
