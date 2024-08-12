@@ -102,10 +102,12 @@ def get_ollama_show(command, port, model_name):
     try:
         env = os.environ.copy()
         env['OLLAMA_HOST'] = f'0.0.0.0:{port}'
-        result = subprocess.run([command, 'show', model_name], capture_output=True, text=True, env=env)
+        result = subprocess.run([command, 'show', model_name], capture_output=True, text=False, env=env)
         if result.returncode == 0:
+            # Decode the output with UTF-8 instead of using the default ASCII
+            output = result.stdout.decode('utf-8')
             details = {}
-            lines = result.stdout.strip().split('\n')
+            lines = output.strip().split('\n')
             for line in lines:
                 if ':' in line:
                     key, value = line.split(':', 1)

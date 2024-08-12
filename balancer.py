@@ -254,6 +254,9 @@ def process_single_request(request_data):
     if '/v1/chat/completions' in request_path:
         backend_endpoint = 'v1/chat/completions'
         format_sse = True  # Flag to determine if Server-Sent Events (SSE) formatting is needed
+    elif '/api/embeddings' in request_path:
+        backend_endpoint = 'api/embeddings'
+        format_sse = False  # No SSE formatting needed
     else:
         backend_endpoint = 'api/chat'
         format_sse = False  # No SSE formatting needed
@@ -285,7 +288,7 @@ def process_single_request(request_data):
                             print(f"Non-JSON or empty line received: {line}")
                             yield f"data: {line}\n\n"
                     else:
-                        # For /api/chat (no SSE format)
+                        # For /api/chat and /api/embed (no SSE format)
                         try:
                             parsed_line = json.loads(line)
                             response_content.append(parsed_line)
@@ -481,6 +484,38 @@ def openai_chat_completions():
     except Exception as e:
         print(f"Error in openai_chat_completions: {str(e)}")  # Debug print
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/embeddings', methods=['POST'])
+def embed_text():
+    try:
+        print("Received embedding request")
+        data = request.json
+        model_name = data.get('model')
+        client_ip = request.remote_addr
+        request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        request_path = request.path
+
+        def generate():
+            try:
+                for chunk in process_single_request({
+                    "data": data,
+                    "model_name": model_name,
+                    "client_ip": client_ip,
+                    "request_time": request_time,
+                    "request_path": request_path
+                }):
+                    yield chunk
+            except GeneratorExit:
+                print("Client closed connection prematurely")
+            except Exception as e:
+                print(f"Unexpected error in streaming: {str(e)}")
+                yield f'{{"error": "Unexpected error: {str(e)}"}}\n'
+
+        return Response(generate(), mimetype='application/json', content_type='application/json')
+    except Exception as e:
+        print(f"Error in embed_text(): {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 
 # Endpoint to get GPU information from all nodes
 @app.route('/gpu-info', methods=['GET'])
