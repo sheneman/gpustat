@@ -79,6 +79,8 @@ def get_ollama_endpoints(node_url):
 
 
 
+import random
+
 def get_optimal_ollama_instance_with_model(model_name):
     global global_cluster_state
 
@@ -87,6 +89,7 @@ def get_optimal_ollama_instance_with_model(model_name):
     utilization_threshold = 25.0
 
     viable_endpoints = []
+    running_endpoints = []
 
     for node in global_cluster_state:
         for ollama_info in node.get("ollama_info", []):
@@ -98,28 +101,28 @@ def get_optimal_ollama_instance_with_model(model_name):
                         total_memory = 0
                         used_memory = 0
                         gpu_utilizations = []
-   
+
                         for gpu in node.get("gpu_info", [])[0].get("gpus", []):
                             if gpu['index'] in service.get("gpu_indices", []):
                                 total_memory += parse_memory(gpu['memory_total'])
                                 used_memory += parse_memory(gpu['memory_used'])
                                 gpu_utilizations.append(gpu['utilization'])
-   
+
                         available_memory = total_memory - used_memory
-   
+
                         # Get the memory requirement of the model
                         model_memory_required = parse_memory(model['size'])
-  
-                        url = service["url"] 
+
+                        url = service["url"]
                         print(f"   ENDPOINT: {url}, MEM AVAIL: {available_memory}, MEM REQUIRED: {model_memory_required}")
-   
+
                         # Check if the model is currently running
                         running_models = [running_model['name'] for running_model in service.get("models_running", [])]
                         is_running = model_name in running_models
-   
+
                         # Calculate average GPU utilization
                         average_gpu_utilization = sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0
-   
+
                         # Create the endpoint_info dictionary
                         endpoint_info = {
                             "service_name": service["service_name"],
@@ -129,10 +132,22 @@ def get_optimal_ollama_instance_with_model(model_name):
                             "model_memory_required_MB": model_memory_required,
                             "average_gpu_utilization": average_gpu_utilization,
                             "running": is_running
-                        } 
-                        viable_endpoints.append(endpoint_info)
-    
-    # Find the optimal endpoint
+                        }
+                        
+                        # Append to running_endpoints if the model is running, otherwise to viable_endpoints
+                        if is_running:
+                            running_endpoints.append(endpoint_info)
+                        else:
+                            viable_endpoints.append(endpoint_info)
+
+    # First, prioritize running endpoints
+    if running_endpoints:
+        # Select the running endpoint with the smallest average GPU utilization
+        best_running_endpoint = min(running_endpoints, key=lambda x: x["average_gpu_utilization"])
+        print(f"Selected running endpoint: {best_running_endpoint}")
+        return best_running_endpoint["url"]
+
+    # If no running endpoints, find the optimal viable endpoint
     if viable_endpoints:
         # Filter viable endpoints by available memory
         memory_sufficient_endpoints = [
@@ -162,6 +177,7 @@ def get_optimal_ollama_instance_with_model(model_name):
     else:
         print("No viable endpoints found.")
         return None
+
 
 
 
@@ -222,7 +238,6 @@ def process_single_request(request_data):
 
     # Get the optimal instance with the new greedy approach
     instance_url = get_optimal_ollama_instance_with_model(model_name)
-    print("LUKE:", instance_url)
     if not instance_url:
         print(f"No instances available for model {model_name}")
         yield '{"error": "No instances available for model"}\n'
