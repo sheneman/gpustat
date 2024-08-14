@@ -15,7 +15,11 @@ CORS(app)
 CONFIG_FILE = "nodes.json"
 LOG_FILE = "requests.log"
 
-global_cluster_state = {}
+global_cluster_state_lock = threading.Lock()
+
+with global_cluster_state_lock:
+    global_cluster_state = {}
+
 global_thread_started = False
 
 REFRESH_INTERVAL = 60     # seconds
@@ -606,11 +610,8 @@ def get_models():
 def start_background_thread():
 
     global global_thread_started
-    global global_cluster_state
 
     print("start_background_thread()")
-
-    global_cluster_state = aggregate_hierarchical_data()
 
     if not global_thread_started:
         global_thread_started = True
@@ -620,7 +621,9 @@ def start_background_thread():
 def update_ollama_state(delay=REFRESH_INTERVAL):
     global global_cluster_state
     while True:
-        global_cluster_state = aggregate_hierarchical_data()
+        with global_cluster_state_lock:
+            global_cluster_state = aggregate_hierarchical_data()
+
         time.sleep(delay)  # Wait for the specified delay before updating again
 
 
