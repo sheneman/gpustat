@@ -3,8 +3,10 @@ from flask_cors import CORS
 import requests
 import json
 import itertools
+import random
 import logging
 from datetime import datetime
+import threading
 import time
 
 app = Flask(__name__)
@@ -13,23 +15,25 @@ CORS(app)
 CONFIG_FILE = "nodes.json"
 LOG_FILE = "requests.log"
 
+global_cluster_state = {}
+global_thread_started = False
+
+REFRESH_INTERVAL = 60     # seconds
+
+
 # Load configuration
 with open(CONFIG_FILE, 'r') as config_file:
     config = json.load(config_file)
 
-# Round-robin iterator for load balancing
-def round_robin(iterable):
-    pool = tuple(iterable)
-    n = len(pool)
-    if n == 0:
-        return iter([])  # empty iterator
-    cycle = itertools.cycle(pool)
-    while True:
-        for i in range(n):
-            yield next(cycle)
 
-# Create round-robin iterator for each model
-round_robin_iterators = {}
+def parse_memory(memory_str):
+    """Convert memory string to MB."""
+    if "GB" in memory_str:
+        return int(float(memory_str.replace(" GB", "")) * 1024)
+    elif "MB" in memory_str:
+        return int(memory_str.replace(" MB", ""))
+    return 0
+
 
 # Function to fetch data from a given node
 def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=False):
@@ -73,68 +77,92 @@ def get_ollama_endpoints(node_url):
     print(f"No Ollama services found for {node_url}")  # Debug print
     return {}
 
-def get_ollama_instances_with_model(model_name):
+
+
+def get_optimal_ollama_instance_with_model(model_name):
+    global global_cluster_state
+
+    print("###########################")
     print(f"Getting Ollama instances for model: {model_name}")  # Debug print
     utilization_threshold = 25.0
-    instances_with_agents = {}  # Initialize the dictionary
 
-    for node in config["nodes"]:
-        print(f"Checking node: {node['url']}")  # Debug print
-        ollama_info = fetch_data_from_node(node["url"], "ollama-info")
+    viable_endpoints = []
 
-        if not ollama_info:
-            print(f"Failed to retrieve Ollama info from {node['url']}")
-            continue
+    for node in global_cluster_state:
+        print("A: ", node)
+        for ollama_info in node.get("ollama_info", []):
+            for service in ollama_info.get("ollama_services", []):
+                # Check if the model is available
+                for model in service.get("models_avail", []):
+                    if model_name == model['name']:
+                        # Calculate total GPU memory available for the service
+                        total_memory = 0
+                        used_memory = 0
+                        gpu_utilizations = []
+   
+                        for gpu in node.get("gpu_info", [])[0].get("gpus", []):
+                            if gpu['index'] in service.get("gpu_indices", []):
+                                total_memory += parse_memory(gpu['memory_total'])
+                                used_memory += parse_memory(gpu['memory_used'])
+                                gpu_utilizations.append(gpu['utilization'])
+   
+                        available_memory = total_memory - used_memory
+   
+                        # Get the memory requirement of the model
+                        model_memory_required = parse_memory(model['size'])
+   
+                        print("MEM AVAIL: ", available_memory, " MEM REQUIRED: ", model_memory_required)
+   
+                        # Check if the model is currently running
+                        running_models = [running_model['name'] for running_model in service.get("models_running", [])]
+                        is_running = model_name in running_models
+   
+                        # Calculate average GPU utilization
+                        average_gpu_utilization = sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0
+   
+                        # Create the endpoint_info dictionary
+                        endpoint_info = {
+                            "service_name": service["service_name"],
+                            "url": service["url"],
+                            "total_gpu_memory_MB": total_memory,
+                            "available_gpu_memory_MB": available_memory,
+                            "model_memory_required_MB": model_memory_required,
+                            "average_gpu_utilization": average_gpu_utilization,
+                            "running": is_running
+                        } 
+                        viable_endpoints.append(endpoint_info)
+    
+    # Find the optimal endpoint
+    if viable_endpoints:
+        # Filter viable endpoints by available memory
+        memory_sufficient_endpoints = [
+            endpoint for endpoint in viable_endpoints
+            if endpoint["available_gpu_memory_MB"] >= endpoint["model_memory_required_MB"]
+        ]
 
-        for service in ollama_info.get("ollama_services", []):
-            ollama_url = service["url"]
-            gpu_indices = service.get("gpu_indices", [])
+        if memory_sufficient_endpoints:
+            # Sort by available memory in descending order
+            memory_sufficient_endpoints.sort(key=lambda x: x["available_gpu_memory_MB"], reverse=True)
 
-            # Check if the requested model is supported by this service
-            models_avail = [model["name"] for model in service.get("models_avail", [])]
-            if model_name in models_avail:
-                # Now that we know the model is available, retrieve GPU info
-                gpu_info = fetch_data_from_node(node["url"], "gpu-info")
-                
-                if not gpu_info:
-                    print(f"Failed to retrieve GPU info from {node['url']}")
-                    continue
+            # Select the best endpoint with the lowest GPU utilization under the threshold
+            for endpoint in memory_sufficient_endpoints:
+                if endpoint["average_gpu_utilization"] <= utilization_threshold:
+                    print(f"Selected endpoint: {endpoint}")
+                    return endpoint["url"]
 
-                # Filter GPU utilization based on the indices associated with this Ollama instance
-                relevant_gpus = [gpu for gpu in gpu_info.get("gpus", []) if gpu["index"] in gpu_indices]
+            # If all have high utilization, select the one with the most available memory
+            best_endpoint = memory_sufficient_endpoints[0]
+            print(f"Selected endpoint (high utilization): {best_endpoint}")
+            return best_endpoint["url"]
+        else:
+            # If no endpoints have sufficient memory, choose one at random
+            random_endpoint = random.choice(viable_endpoints)
+            print(f"Selected endpoint (insufficient memory): {random_endpoint}")
+            return random_endpoint["url"]
+    else:
+        print("No viable endpoints found.")
+        return None
 
-                # Calculate average utilization for the relevant GPUs
-                if relevant_gpus:
-                    total_utilization = sum(gpu.get("utilization", 0) for gpu in relevant_gpus)
-                    average_utilization = total_utilization / len(relevant_gpus)
-                else:
-                    average_utilization = float('inf')
-
-                print(f"Added instance: {ollama_url} with agent: {node['url']} and GPU utilization: {average_utilization}%")
-                
-                # Store the instance data
-                instances_with_agents[ollama_url] = {
-                    "agent_url": node["url"],
-                    "gpu_indices": gpu_indices,
-                    "average_utilization": average_utilization
-                }
-
-                # If the GPU utilization is under the threshold, stop and return this instance
-                if average_utilization < utilization_threshold:
-                    print(f"Selected instance with GPU utilization under {utilization_threshold}%: {ollama_url} ({average_utilization}%)")
-                    return {
-                        ollama_url: {
-                            "agent_url": node["url"],
-                            "gpu_indices": gpu_indices,
-                            "average_utilization": average_utilization
-                        }
-                    }
-            else:
-                print(f"Model {model_name} not available on {ollama_url}, skipping GPU info retrieval.")
-
-    # If no suitable instance is found during the loop, return all instances with their details
-    print(f"No instance met the threshold during the initial scan.")
-    return instances_with_agents  # This is now a valid return statement
 
 
 
@@ -170,49 +198,6 @@ def get_gpu_utilization(agent_url):
         return float('inf')  # Return a high value if GPU utilization cannot be fetched
 
 
-def get_optimal_ollama_instance(model_name):
-    print(f"Getting optimal Ollama instance for model: {model_name}")  # Debug print
-    instances_with_agents = get_ollama_instances_with_model(model_name)
-    
-    if not instances_with_agents:
-        print(f"No instances found for model {model_name}")
-        return None
-
-    # Define the GPU utilization threshold
-    utilization_threshold = 25.0
-
-    optimal_instance = None
-    lowest_utilization = float('inf')
-
-    for ollama_url, instance_data in instances_with_agents.items():
-        running_models = get_running_models(ollama_url)
-        is_running = model_name in running_models
-        gpu_utilization = instance_data["average_utilization"]
-
-        print(f"Instance: {ollama_url}")
-        print(f"  Agent: {instance_data['agent_url']}")
-        print(f"  Model running: {'Yes' if is_running else 'No'}")
-        print(f"  GPU utilization: {gpu_utilization}%")
-
-        # Check if the model is running and GPU utilization is below the threshold
-        if is_running and gpu_utilization < utilization_threshold:
-            print(f"Selected instance with GPU utilization under {utilization_threshold}%: {ollama_url} ({gpu_utilization}%)")
-            return ollama_url
-
-        # Keep track of the instance with the lowest GPU utilization
-        if gpu_utilization < lowest_utilization:
-            optimal_instance = ollama_url
-            lowest_utilization = gpu_utilization
-
-    # If no instance met the threshold, select the one with the lowest utilization
-    if optimal_instance:
-        print(f"No instance met the threshold; selected instance with lowest GPU utilization: {optimal_instance} ({lowest_utilization}%)")
-        return optimal_instance
-
-    print("No suitable instance found")
-    return None
-
-
 # Function to log requests in jsonl format
 def log_request(log_data):
     with open(LOG_FILE, 'a') as log_file:
@@ -236,15 +221,12 @@ def process_single_request(request_data):
     print(f"Processing request for model: {model_name}")
 
     # Get the optimal instance with the new greedy approach
-    optimal_instance_data = get_ollama_instances_with_model(model_name)
-    if not optimal_instance_data:
+    instance_url = get_optimal_ollama_instance_with_model(model_name)
+    print("LUKE:", instance_url)
+    if not instance_url:
         print(f"No instances available for model {model_name}")
         yield '{"error": "No instances available for model"}\n'
         return
-
-    # Extract the instance URL
-    instance_url = next(iter(optimal_instance_data))
-    instance_info = optimal_instance_data[instance_url]
 
     print(f"Selected instance: {instance_url}")
 
@@ -254,12 +236,15 @@ def process_single_request(request_data):
     if '/v1/chat/completions' in request_path:
         backend_endpoint = 'v1/chat/completions'
         format_sse = True  # Flag to determine if Server-Sent Events (SSE) formatting is needed
+        is_v1_endpoint = True  # Flag to identify /v1/chat/completions
     elif '/api/embeddings' in request_path:
         backend_endpoint = 'api/embeddings'
         format_sse = False  # No SSE formatting needed
+        is_v1_endpoint = False
     else:
         backend_endpoint = 'api/chat'
         format_sse = False  # No SSE formatting needed
+        is_v1_endpoint = False
 
     response_content = []
     response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
@@ -313,20 +298,41 @@ def process_single_request(request_data):
             yield '{"error": "Failed to get response from LLM instance"}\n'
 
     end_time = time.time()
-    total_tokens = extract_prompt_length(data.get('messages', [])) + sum(
-        len(resp.get('content', '').split()) for resp in response_content if 'content' in resp)
+
+    # Initialize token counts
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+
+    # Extract token counts from the final response
+    if response_content:
+        final_response = response_content[-1]
+
+        if is_v1_endpoint:
+            # For /v1/chat/completions endpoint
+            if "usage" in final_response:
+                prompt_tokens = final_response["usage"].get("prompt_tokens", 0)
+                completion_tokens = final_response["usage"].get("completion_tokens", 0)
+                total_tokens = final_response["usage"].get("total_tokens", prompt_tokens + completion_tokens)
+        else:
+            # For /api/chat endpoint
+            prompt_tokens = final_response.get("prompt_eval_count", 0)
+            completion_tokens = final_response.get("eval_count", 0)
+            total_tokens = prompt_tokens + completion_tokens
+
     log_data = {
         "timestamp": request_time,
         "ip_address": client_ip,
         "model": model_name,
-        "prompt_tokens": extract_prompt_length(data.get('messages', [])),
-        "completion_tokens": total_tokens - extract_prompt_length(data.get('messages', [])),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "inference_server": instance_url,
         "model_loaded": True,
         "response_time_ms": int((end_time - start_time) * 1000)
     }
     log_request(log_data)
+
 
 
 
@@ -370,7 +376,7 @@ def aggregate_hierarchical_data():
         if gpu_info:
             node_info["gpu_info"].append(gpu_info)
         aggregated_info.append(node_info)
-    print(f"Aggregated info for {len(aggregated_info)} nodes")  # Debug print
+    print(f"Aggregated info for {len(aggregated_info)} nodes\n")  # Debug print
     return aggregated_info
 
 # Function to get models from all Ollama instances
@@ -573,6 +579,7 @@ def collect_info():
         error_json = json.dumps({"error": str(e)}, indent=4)
         return Response(error_json, mimetype='application/json'), 500
 
+
 # Endpoint to get models from all Ollama instances and de-duplicate
 @app.route('/api/tags', methods=['GET'])
 def get_models():
@@ -587,8 +594,24 @@ def get_models():
         error_json = json.dumps({"error": str(e)}, indent=4)
         return Response(error_json, mimetype='application/json'), 500
 
+
+def start_background_thread():
+    print("start_background_thread()")
+    global global_thread_started
+    if not global_thread_started:
+        global_thread_started = True
+        threading.Thread(target=update_ollama_state_periodically, args=(REFRESH_INTERVAL,), daemon=True).start()
+
+
+def update_ollama_state_periodically(delay=REFRESH_INTERVAL):
+    global global_cluster_state
+    while True:
+        global_cluster_state = aggregate_hierarchical_data()
+        time.sleep(delay)  # Wait for the specified delay before updating again
+
+
+start_background_thread()
+
 if __name__ == '__main__':
-    print("Starting the Flask application")  # Debug print
     app.run(host='0.0.0.0', port=8009, threaded=True)
-    print("Flask application has stopped")  # Debug print
 
