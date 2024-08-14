@@ -78,9 +78,6 @@ def get_ollama_endpoints(node_url):
     return {}
 
 
-
-import random
-
 def get_optimal_ollama_instance_with_model(model_name):
     global global_cluster_state
 
@@ -89,7 +86,6 @@ def get_optimal_ollama_instance_with_model(model_name):
     utilization_threshold = 25.0
 
     viable_endpoints = []
-    running_endpoints = []
 
     for node in global_cluster_state:
         for ollama_info in node.get("ollama_info", []):
@@ -134,17 +130,15 @@ def get_optimal_ollama_instance_with_model(model_name):
                             "running": is_running
                         }
                         
-                        # Append to running_endpoints if the model is running, otherwise to viable_endpoints
-                        if is_running:
-                            running_endpoints.append(endpoint_info)
-                        else:
-                            viable_endpoints.append(endpoint_info)
+                        # Add the endpoint to the viable_endpoints list
+                        viable_endpoints.append(endpoint_info)
 
-    # First, prioritize running endpoints
+    # Prioritize running endpoints
+    running_endpoints = [endpoint for endpoint in viable_endpoints if endpoint["running"]]
     if running_endpoints:
         # Select the running endpoint with the smallest average GPU utilization
         best_running_endpoint = min(running_endpoints, key=lambda x: x["average_gpu_utilization"])
-        print(f"Selected running endpoint: {best_running_endpoint}")
+        print(f"Model already running on endpoint: {best_running_endpoint}")
         return best_running_endpoint["url"]
 
     # If no running endpoints, find the optimal viable endpoint
@@ -177,7 +171,6 @@ def get_optimal_ollama_instance_with_model(model_name):
     else:
         print("No viable endpoints found.")
         return None
-
 
 
 
