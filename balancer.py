@@ -223,7 +223,15 @@ def extract_prompt_length(messages):
 
 
 def process_single_request(request_data):
+
+    global global_thread_started
+    global global_cluster_state
+
     print("process_single_request()")
+
+    if not global_thread_started:
+        with global_cluster_state_lock:
+            global_cluster_state = aggregate_hierarchical_data()
 
     data = request_data['data']
     model_name = request_data['model_name']
