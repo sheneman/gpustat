@@ -254,8 +254,12 @@ def process_single_request(request_data):
 
     # Determine the backend endpoint based on the request path
     if '/v1/chat/completions' in request_path:
+        # Check if the "stream" attribute is true
+        if data.get("stream", False):  # Default to False if "stream" is not present
+            format_sse = True
+        else:
+            format_sse = False
         backend_endpoint = 'v1/chat/completions'
-        format_sse = True  # Flag to determine if Server-Sent Events (SSE) formatting is needed
         is_v1_endpoint = True  # Flag to identify /v1/chat/completions
     elif '/api/embeddings' in request_path:
         backend_endpoint = 'api/embeddings'
