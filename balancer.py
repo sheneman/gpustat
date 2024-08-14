@@ -110,7 +110,7 @@ def get_optimal_ollama_instance_with_model(model_name):
                         # Get the memory requirement of the model
                         model_memory_required = parse_memory(model['size'])
    
-                        print(f"   NODE: {node}, MEM AVAIL: {available_memory}, MEM REQUIRED: {model_memory_required}")
+                        print(f"   ENDPOINT: {service["url"]}, MEM AVAIL: {available_memory}, MEM REQUIRED: {model_memory_required}")
    
                         # Check if the model is currently running
                         running_models = [running_model['name'] for running_model in service.get("models_running", [])]
@@ -595,14 +595,20 @@ def get_models():
 
 
 def start_background_thread():
-    print("start_background_thread()")
+
     global global_thread_started
+    global global_cluster_state
+
+    print("start_background_thread()")
+
+    global_cluster_state = aggregate_hierarchical_data()
+
     if not global_thread_started:
         global_thread_started = True
-        threading.Thread(target=update_ollama_state_periodically, args=(REFRESH_INTERVAL,), daemon=True).start()
+        threading.Thread(target=update_ollama_state, args=(REFRESH_INTERVAL,), daemon=True).start()
 
 
-def update_ollama_state_periodically(delay=REFRESH_INTERVAL):
+def update_ollama_state(delay=REFRESH_INTERVAL):
     global global_cluster_state
     while True:
         global_cluster_state = aggregate_hierarchical_data()
