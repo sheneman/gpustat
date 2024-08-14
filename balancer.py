@@ -110,7 +110,7 @@ def get_optimal_ollama_instance_with_model(model_name):
                         # Get the memory requirement of the model
                         model_memory_required = parse_memory(model['size'])
    
-                        print("MEM AVAIL: ", available_memory, " MEM REQUIRED: ", model_memory_required)
+                        print(f"   NODE: {node}, MEM AVAIL: {available_memory}, MEM REQUIRED: {model_memory_required}")
    
                         # Check if the model is currently running
                         running_models = [running_model['name'] for running_model in service.get("models_running", [])]
