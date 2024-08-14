@@ -89,7 +89,6 @@ def get_optimal_ollama_instance_with_model(model_name):
     viable_endpoints = []
 
     for node in global_cluster_state:
-        print("A: ", node)
         for ollama_info in node.get("ollama_info", []):
             for service in ollama_info.get("ollama_services", []):
                 # Check if the model is available
