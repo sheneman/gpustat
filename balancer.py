@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 import threading
 import time
+import tiktoken
 
 app = Flask(__name__)
 CORS(app)
@@ -38,6 +39,11 @@ def parse_memory(memory_str):
         return int(memory_str.replace(" MB", ""))
     return 0
 
+
+# Function to tokenize text using tiktoken
+def tokenize(text, model_name="gpt-4"):
+    encoding = tiktoken.encoding_for_model(model_name)
+    return encoding.encode(text)
 
 # Function to fetch data from a given node
 def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=False):
@@ -273,6 +279,7 @@ def process_single_request(request_data):
     response_content = []
     response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
 
+    line_cnt = 0
     if response_stream:
         try:
             for line in response_stream:
@@ -283,6 +290,7 @@ def process_single_request(request_data):
                         # For SSE format (used by /v1/chat/completions)
                         if line.startswith("data:"):
                             line = line[len("data:"):].strip()  # Remove "data:" prefix
+                            line_cnt += 1
 
                         if line == "[DONE]":
                             print("Received end-of-stream marker")
@@ -338,6 +346,12 @@ def process_single_request(request_data):
                 prompt_tokens = final_response["usage"].get("prompt_tokens", 0)
                 completion_tokens = final_response["usage"].get("completion_tokens", 0)
                 total_tokens = final_response["usage"].get("total_tokens", prompt_tokens + completion_tokens)
+            else:
+                messages = data.get('messages', [])
+                print(str(messages))
+                prompt_tokens = len(tokenize(str(messages))) 
+                completion_tokens = line_cnt
+                total_tokens = prompt_tokens + completion_tokens
         else:
             # For /api/chat endpoint
             prompt_tokens = final_response.get("prompt_eval_count", 0)
@@ -487,7 +501,6 @@ def generate():
         return jsonify({"error": str(e)}), 500
 
 
-# In the openai_chat_completions function
 @app.route('/v1/chat/completions', methods=['POST'])
 def openai_chat_completions():
     try:
@@ -497,9 +510,29 @@ def openai_chat_completions():
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         request_path = request.path  # Capture the request path
+        
+        # Check if 'stream' is True in the request JSON
+        if data.get('stream') is True:
+            print("Stream Is True")  # Print if stream is True
 
-        #print(f"Request data: {data}")  # Debug print
+            # Assuming `data` contains 'messages' which is a list of chat messages
+            system_prompt = ""
+            user_prompt = ""
+            
+            for message in data.get('messages', []):
+                if message.get('role') == 'system':
+                    system_prompt = message.get('content', "")
+                elif message.get('role') == 'user':
+                    user_prompt = message.get('content', "")
+            
+            # Tokenize the system and user prompts
+            system_tokens = tokenize(system_prompt, "gpt-4")
+            user_tokens   = tokenize(user_prompt, "gpt-4")
 
+            # Print the number of tokens in each prompt
+            print(f"System Prompt Tokens: {len(system_tokens)}")
+            print(f"User Prompt Tokens: {len(user_tokens)}")
+        
         def generate():
             for chunk in process_single_request({
                 "data": data,
