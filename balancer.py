@@ -47,7 +47,7 @@ def tokenize(text, model_name="gpt-4"):
 
 # Function to fetch data from a given node
 def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=False):
-    print(f"Fetching data from {node_url}/{endpoint}")  # Debug print
+    #print(f"Fetching data from {node_url}/{endpoint}")  # Debug print
     try:
         if method == 'POST':
             response = requests.post(f"{node_url}/{endpoint}", json=payload, stream=stream)
@@ -68,7 +68,7 @@ def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=
 
 # Function to check the health of a node
 def check_node_health(node_url):
-    print(f"Checking health of {node_url}")  # Debug print
+    #print(f"Checking health of {node_url}")  # Debug print
     try:
         response = requests.get(f"{node_url}/health")
         return response.status_code == 200
@@ -395,11 +395,11 @@ def aggregate_data():
 
 # Function to collect and aggregate hierarchical information
 def aggregate_hierarchical_data():
-    print("Aggregating hierarchical data")  # Debug print
+    #print("Aggregating hierarchical data")  # Debug print
     aggregated_info = []
     for node in config["nodes"]:
         node_url = node["url"]
-        print(f"Collecting data for node: {node_url}")  # Debug print
+        #print(f"Collecting data for node: {node_url}")  # Debug print
         node_health = check_node_health(node_url)
         node_info = {
             "node": node_url,
