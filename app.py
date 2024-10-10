@@ -224,6 +224,7 @@ def ollama_info():
             "port": service["port"],
             "url": service["url"],
             "gpu_indices": format_gpu_indices(service["gpu_indices"]),
+            "priority": service["priority"],
             "ollama_version": version,
             "OLLAMA_KEEP_ALIVE": service.get("OLLAMA_KEEP_ALIVE", ""),
             "OLLAMA_MAX_QUEUE": service.get("OLLAMA_MAX_QUEUE", ""),
