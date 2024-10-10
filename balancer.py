@@ -24,6 +24,7 @@ with global_cluster_state_lock:
 global_thread_started = False
 
 REFRESH_INTERVAL = 60     # seconds
+NODE_UTILIZATION_THRESHOLD = 0.25   # cutoff on mean node GPU utilization used in scheduler
 
 
 # Load configuration
@@ -91,9 +92,8 @@ def get_ollama_endpoints(node_url):
 def get_optimal_ollama_instance_with_model(model_name):
     global global_cluster_state
 
-    print("###########################")
     print(f"Getting Ollama instances for model: {model_name}")  # Debug print
-    utilization_threshold = 25.0
+    utilization_threshold = NODE_UTILIZATION_THRESHOLD
 
     viable_endpoints = []
 
@@ -230,10 +230,10 @@ def extract_prompt_length(messages):
 
 def process_single_request(request_data):
 
+    print("********** BEGIN REQUEST ***********")
+
     global global_thread_started
     global global_cluster_state
-
-    print("process_single_request()")
 
     if not global_thread_started:
         with global_cluster_state_lock:
@@ -244,6 +244,7 @@ def process_single_request(request_data):
     client_ip = request_data['client_ip']
     request_time = request_data['request_time']
     request_path = request_data['request_path']
+
 
     print(f"Processing request for model: {model_name}")
 
@@ -358,6 +359,8 @@ def process_single_request(request_data):
             completion_tokens = final_response.get("eval_count", 0)
             total_tokens = prompt_tokens + completion_tokens
 
+    response_time_ms = int((end_time - start_time) * 1000)
+
     log_data = {
         "timestamp": request_time,
         "ip_address": client_ip,
@@ -367,10 +370,11 @@ def process_single_request(request_data):
         "total_tokens": total_tokens,
         "inference_server": instance_url,
         "model_loaded": True,
-        "response_time_ms": int((end_time - start_time) * 1000)
+        "response_time_ms": response_time_ms
     }
     log_request(log_data)
 
+    print(f"***END REQUEST: {response_time_ms} msec")
 
 
 
@@ -414,19 +418,19 @@ def aggregate_hierarchical_data():
         if gpu_info:
             node_info["gpu_info"].append(gpu_info)
         aggregated_info.append(node_info)
-    print(f"Aggregated info for {len(aggregated_info)} nodes\n")  # Debug print
+    print(f"Aggregated info for {len(aggregated_info)} nodes")  # Debug print
     return aggregated_info
 
 # Function to get models from all Ollama instances
 def get_models_from_ollama_instances():
-    print("Getting models from all Ollama instances")  # Debug print
+    #print("Getting models from all Ollama instances")  # Debug print
     all_models = []
     models_set = set()
 
     for node in config["nodes"]:
         ollama_endpoints = get_ollama_endpoints(node["url"])
         for endpoint in ollama_endpoints:
-            print(f"Fetching models from endpoint: {endpoint}")  # Debug print
+            #print(f"Fetching models from endpoint: {endpoint}")  # Debug print
             node_models = fetch_data_from_node(endpoint, "api/tags")
             if node_models:
                 for model in node_models.get("models", []):
@@ -436,7 +440,7 @@ def get_models_from_ollama_instances():
 
     # Sort the models by name in alphabetical order
     all_models_sorted = sorted(all_models, key=lambda x: x["name"])
-    print(f"Total unique models found: {len(all_models_sorted)}")  # Debug print
+    print(f"Total unique models found: {len(all_models_sorted)} across {len(config['nodes'])} nodes.")
 
     return all_models_sorted
 
@@ -444,8 +448,10 @@ def get_models_from_ollama_instances():
 @app.route('/api/chat', methods=['POST'])
 def chat_completion():
     try:
-        print("Received chat completion request")
+        #print("Received chat completion request")
         data = request.json
+        data.pop('keep_alive', None)    # let's remove this and force the system to use the local OLLAMA_KEEP_ALIVE environment var
+        print(data)
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -478,7 +484,7 @@ def chat_completion():
 @app.route('/api/generate', methods=['POST'])
 def generate():
     try:
-        print("Received generate request")  # Debug print
+        #print("Received generate request")  # Debug print
         data = request.json
         model_name = data.get('model')
         client_ip = request.remote_addr
@@ -628,7 +634,6 @@ def collect_info():
     try:
         print("Received request to collect hierarchical info")  # Debug print
         aggregated_info = aggregate_hierarchical_data()
-        print(f"Returning aggregated info for {len(aggregated_info)} nodes")  # Debug print
         pretty_json = json.dumps(aggregated_info, indent=4)
         return Response(pretty_json, mimetype='application/json')
     except Exception as e:
@@ -643,7 +648,7 @@ def get_models():
     try:
         print("Received request for model tags")  # Debug print
         all_models = get_models_from_ollama_instances()
-        print(f"Returning {len(all_models)} unique models")  # Debug print
+        #print(f"Returning {len(all_models)} unique models")  # Debug print
         pretty_json = json.dumps({"models": all_models}, indent=4)
         return Response(pretty_json, mimetype='application/json')
     except Exception as e:
