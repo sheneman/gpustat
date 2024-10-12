@@ -24,7 +24,7 @@ with global_cluster_state_lock:
 global_thread_started = False
 
 REFRESH_INTERVAL = 60     # seconds
-NODE_UTILIZATION_THRESHOLD = 0.25   # cutoff on mean node GPU utilization used in scheduler
+NODE_UTILIZATION_THRESHOLD = 85   
 
 
 # Load configuration
@@ -89,103 +89,139 @@ def get_ollama_endpoints(node_url):
     return {}
 
 
-def get_optimal_ollama_instance_with_model(model_name):
-    global global_cluster_state
+import random
 
-    print(f"Getting Ollama instances for model: {model_name}")  # Debug print
-    utilization_threshold = NODE_UTILIZATION_THRESHOLD
+def get_optimal_ollama_instance_with_model(model_name):
+    """
+    Selects the optimal Ollama instance (endpoint) for the given model based on various criteria
+    to balance the load across nodes while reducing latency.
+
+    Args:
+        model_name (str): The name of the model to deploy.
+
+    Returns:
+        str or None: The URL of the selected endpoint, or None if no viable endpoint is found.
+    """
+    global global_cluster_state
+    print(f"Selecting optimal Ollama instance for model: {model_name}")
 
     viable_endpoints = []
 
+    # Step 1: Gather all endpoints that have the model available
     for node in global_cluster_state:
         for ollama_info in node.get("ollama_info", []):
             for service in ollama_info.get("ollama_services", []):
-                # Check if the model is available
-                for model in service.get("models_avail", []):
-                    if model_name == model['name']:
-                        # Calculate total GPU memory available for the service
-                        total_memory = 0
-                        used_memory = 0
-                        gpu_utilizations = []
+                # Check if the model is available on this service
+                models_avail = [model['name'] for model in service.get("models_avail", [])]
+                if model_name in models_avail:
+                    # Initialize variables
+                    total_memory = 0
+                    used_memory = 0
+                    gpu_utilizations = []
 
-                        for gpu in node.get("gpu_info", [])[0].get("gpus", []):
-                            if gpu['index'] in service.get("gpu_indices", []):
-                                total_memory += parse_memory(gpu['memory_total'])
-                                used_memory += parse_memory(gpu['memory_used'])
-                                gpu_utilizations.append(gpu['utilization'])
+                    # Collect GPU info for GPUs used by this service
+                    gpu_indices = service.get("gpu_indices", [])
+                    for gpu in node.get("gpu_info", [])[0].get("gpus", []):
+                        if gpu['index'] in gpu_indices:
+                            total_memory += parse_memory(gpu['memory_total'])
+                            used_memory += parse_memory(gpu['memory_used'])
+                            gpu_utilizations.append(gpu['utilization'])
 
-                        available_memory = total_memory - used_memory
+                    available_memory = total_memory - used_memory
+                    priority = service.get("priority", 10)  # Default to 10 if not specified
+                    url = service["url"]
 
-                        # Get the memory requirement of the model
-                        model_memory_required = parse_memory(model['size'])
+                    # Get the memory requirement of the model
+                    model_info = next((m for m in service.get("models_avail", []) if m['name'] == model_name), None)
+                    if model_info:
+                        model_memory_required = parse_memory(model_info['size'])
+                    else:
+                        model_memory_required = 0  # Should not happen since we checked model_name in models_avail
 
-                        url = service["url"]
-                        print(f"   ENDPOINT: {url}, MEM AVAIL: {available_memory}, MEM REQUIRED: {model_memory_required}")
+                    # Check if the model is currently running
+                    running_models = [running_model['name'] for running_model in service.get("models_running", [])]
+                    is_running = model_name in running_models
 
-                        # Check if the model is currently running
-                        running_models = [running_model['name'] for running_model in service.get("models_running", [])]
-                        is_running = model_name in running_models
+                    # Calculate average GPU utilization
+                    average_gpu_utilization = sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0
 
-                        # Calculate average GPU utilization
-                        average_gpu_utilization = sum(gpu_utilizations) / len(gpu_utilizations) if gpu_utilizations else 0
+                    # Create endpoint_info
+                    endpoint_info = {
+                        "service_name": service["service_name"],
+                        "url": url,
+                        "total_gpu_memory_MB": total_memory,
+                        "available_gpu_memory_MB": available_memory,
+                        "model_memory_required_MB": model_memory_required,
+                        "average_gpu_utilization": average_gpu_utilization,
+                        "running": is_running,
+                        "priority": priority
+                    }
 
-                        # Create the endpoint_info dictionary
-                        endpoint_info = {
-                            "service_name": service["service_name"],
-                            "url": service["url"],
-                            "total_gpu_memory_MB": total_memory,
-                            "available_gpu_memory_MB": available_memory,
-                            "model_memory_required_MB": model_memory_required,
-                            "average_gpu_utilization": average_gpu_utilization,
-                            "running": is_running
-                        }
-                        
-                        # Add the endpoint to the viable_endpoints list
+                    # Only consider endpoints where total GPU memory is sufficient
+                    if total_memory >= model_memory_required:
                         viable_endpoints.append(endpoint_info)
+                        print(f"Found viable endpoint: {endpoint_info}")
+                    else:
+                        print(f"Endpoint {url} skipped: total GPU memory ({total_memory}MB) less than model requirement ({model_memory_required}MB)")
 
-    # Prioritize running endpoints
-    running_endpoints = [endpoint for endpoint in viable_endpoints if endpoint["running"]]
-    if running_endpoints:
-        # Select the running endpoint with the smallest average GPU utilization
-        best_running_endpoint = min(running_endpoints, key=lambda x: x["average_gpu_utilization"])
-        print(f"Model already running on endpoint: {best_running_endpoint}")
-        return best_running_endpoint["url"]
-
-    # If no running endpoints, find the optimal viable endpoint
-    if viable_endpoints:
-        # Filter viable endpoints by available memory
-        memory_sufficient_endpoints = [
-            endpoint for endpoint in viable_endpoints
-            if endpoint["available_gpu_memory_MB"] >= endpoint["model_memory_required_MB"]
-        ]
-
-        if memory_sufficient_endpoints:
-            # Sort by available memory in descending order
-            memory_sufficient_endpoints.sort(key=lambda x: x["available_gpu_memory_MB"], reverse=True)
-
-            # Select the best endpoint with the lowest GPU utilization under the threshold
-            for endpoint in memory_sufficient_endpoints:
-                if endpoint["average_gpu_utilization"] <= utilization_threshold:
-                    print(f"Selected endpoint: {endpoint}")
-                    return endpoint["url"]
-
-            # If all have high utilization, select the one with the most available memory
-            best_endpoint = memory_sufficient_endpoints[0]
-            print(f"Selected endpoint (high utilization): {best_endpoint}")
-            return best_endpoint["url"]
-        else:
-            # If no endpoints have sufficient memory, choose one at random
-            random_endpoint = random.choice(viable_endpoints)
-            print(f"Selected endpoint (insufficient memory): {random_endpoint}")
-            return random_endpoint["url"]
-    else:
-        print("No viable endpoints found.")
+    # Step 2: Check if any viable endpoints are available
+    if not viable_endpoints:
+        print("No viable endpoints found with sufficient total GPU memory to run the model.")
         return None
 
+    # Step 3: Consider all viable endpoints together
+    print("Scoring all viable endpoints based on various factors.")
+
+    scored_endpoints = []
+    for ep in viable_endpoints:
+        # Normalize the variables
+        normalized_priority = (10 - ep["priority"]) / 10  # Normalized to [0,1]; higher is better
+        available_memory_ratio = ep["available_gpu_memory_MB"] / ep["model_memory_required_MB"]
+        normalized_available_memory = min(available_memory_ratio, 1)  # Capped at 1; higher is better
+        normalized_utilization = (100 - ep["average_gpu_utilization"]) / 100  # Normalized to [0,1]; higher is better
+        normalized_running = 1 if ep["running"] else 0  # 1 if running, 0 if not
+        random_factor = random.random()  # Random number between [0,1]
+
+        # Calculate the score with equal weights
+        score = (
+            random_factor * 0.35 +
+            normalized_priority * 0.3 +
+            normalized_running * 0.15 +
+            normalized_utilization * 0.1 +
+            normalized_available_memory * 0.1
+        )
+
+        # Exclude endpoints that are too busy
+        if ep["average_gpu_utilization"] >= NODE_UTILIZATION_THRESHOLD:
+            print(f"Endpoint {ep['url']} is too busy (GPU utilization {ep['average_gpu_utilization']}%). Skipping.")
+            continue
+
+        scored_endpoints.append((score, ep))
+
+        # Debugging output
+        print(
+            f"Endpoint {ep['url']} - "
+            f"Normalized Priority: {normalized_priority:.2f}, "
+            f"Normalized Available Memory: {normalized_available_memory:.2f}, "
+            f"Normalized Utilization: {normalized_utilization:.2f}, "
+            f"Running: {normalized_running}, "
+            f"Random Factor: {random_factor:.2f}, "
+            f"Score: {score:.2f}"
+        )
+
+    # Step 4: Check if any endpoints were scored
+    if not scored_endpoints:
+        print("No viable endpoints found after scoring (all may be too busy).")
+        return None
+
+    # Step 5: Select the endpoint with the highest score
+    best_endpoint = max(scored_endpoints, key=lambda x: x[0])[1]
+    print(f"Selected endpoint: {best_endpoint['url']} with score: {max(scored_endpoints)[0]:.2f}")
+    return best_endpoint["url"]
 
 
 
-# Function to get running models on an Ollama instance
+
 def get_running_models(instance_url):
     running_models = fetch_data_from_node(instance_url, "api/ps")
     if running_models and "models" in running_models:
@@ -445,13 +481,28 @@ def get_models_from_ollama_instances():
     return all_models_sorted
 
 
+@app.route('/', methods=['GET', 'HEAD'])
+def index():
+    return Response('Ollama is running', status=200, content_type='text/plain')
+
+
+
+def keep_alive_generator(main_generator):
+    keep_alive_interval = 15  # Send keep-alive every 15 seconds
+    last_keep_alive = time.time()
+
+    for chunk in main_generator:
+        yield chunk
+        current_time = time.time()
+        if current_time - last_keep_alive > keep_alive_interval:
+            yield ' '  # Send a space as a keep-alive
+            last_keep_alive = current_time
+
 @app.route('/api/chat', methods=['POST'])
 def chat_completion():
     try:
-        #print("Received chat completion request")
         data = request.json
-        data.pop('keep_alive', None)    # let's remove this and force the system to use the local OLLAMA_KEEP_ALIVE environment var
-        print(data)
+        data.pop('keep_alive', None)
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -459,13 +510,13 @@ def chat_completion():
 
         def generate():
             try:
-                for chunk in process_single_request({
+                for chunk in keep_alive_generator(process_single_request({
                     "data": data,
                     "model_name": model_name,
                     "client_ip": client_ip,
                     "request_time": request_time,
                     "request_path": request_path
-                }):
+                })):
                     yield chunk
             except GeneratorExit:
                 print("Client closed connection prematurely")
@@ -478,32 +529,26 @@ def chat_completion():
         print(f"Error in chat_completion: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-
-
-# Endpoint for generate requests with streaming
 @app.route('/api/generate', methods=['POST'])
 def generate():
     try:
-        #print("Received generate request")  # Debug print
         data = request.json
         model_name = data.get('model')
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        #print(f"Request data: {data}")  # Debug print
-
         def generate():
-            for chunk in process_single_request({
+            for chunk in keep_alive_generator(process_single_request({
                 "data": data,
                 "model_name": model_name,
                 "client_ip": client_ip,
                 "request_time": request_time
-            }):
+            })):
                 yield chunk
 
         return Response(generate(), mimetype='application/json', content_type='application/json')
     except Exception as e:
-        print(f"Error in generate: {str(e)}")  # Debug print
+        print(f"Error in generate: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
