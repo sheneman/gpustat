@@ -22,11 +22,11 @@ BALANCE_FACTOR_MEMORY      = 0.1     # How important is amount of available memo
 REFRESH_INTERVAL = 60     # seconds
 NODE_UTILIZATION_THRESHOLD = 85   
 
-CONFIG_FILE = "nodes.json"
-LOG_FILE = "requests.log"
+CONFIG_FILE = "balancer.json"
+LOG_FILE    = "requests.log"
 
 global_cluster_state_lock = threading.Lock()
-global_models_list_lock = threading.Lock()
+global_models_list_lock   = threading.Lock()
 
 with global_cluster_state_lock:
     global_cluster_state = {}
