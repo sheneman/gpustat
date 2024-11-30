@@ -13,18 +13,29 @@ import tiktoken
 app = Flask(__name__)
 CORS(app)
 
+BALANCE_FACTOR_RANDOM      = 0.25    # Let's add some stochasticity to the selection process!
+BALANCE_FACTOR_PRIORITY    = 0.45    # Endpoint speed and priority should play a big role
+BALANCE_FACTOR_RUNNING     = 0.05    # Whether the model is loaded already or not should play a role
+BALANCE_FACTOR_UTILIZATION = 0.15    # How important is current GPU utilization?
+BALANCE_FACTOR_MEMORY      = 0.1     # How important is amount of available memory relative to model size?
+
+REFRESH_INTERVAL = 60     # seconds
+NODE_UTILIZATION_THRESHOLD = 85   
+
 CONFIG_FILE = "nodes.json"
 LOG_FILE = "requests.log"
 
 global_cluster_state_lock = threading.Lock()
+global_models_list_lock = threading.Lock()
 
 with global_cluster_state_lock:
     global_cluster_state = {}
 
+with global_models_list_lock:
+    global_models_list = []
+
 global_thread_started = False
 
-REFRESH_INTERVAL = 60     # seconds
-NODE_UTILIZATION_THRESHOLD = 85   
 
 
 # Load configuration
@@ -79,7 +90,7 @@ def check_node_health(node_url):
 
 # Function to get Ollama instance endpoints from a node and associate with agent endpoint
 def get_ollama_endpoints(node_url):
-    print(f"Getting Ollama endpoints for {node_url}")  # Debug print
+    #print(f"Getting Ollama endpoints for {node_url}")  # Debug print
     ollama_info = fetch_data_from_node(node_url, "ollama-info")
     if ollama_info and "ollama_services" in ollama_info:
         endpoints = {service["url"]: node_url for service in ollama_info["ollama_services"]}
@@ -89,7 +100,6 @@ def get_ollama_endpoints(node_url):
     return {}
 
 
-import random
 
 def get_optimal_ollama_instance_with_model(model_name):
     """
@@ -182,19 +192,20 @@ def get_optimal_ollama_instance_with_model(model_name):
         normalized_running = 1 if ep["running"] else 0  # 1 if running, 0 if not
         random_factor = random.random()  # Random number between [0,1]
 
+
         # Calculate the score with equal weights
         score = (
-            random_factor * 0.35 +
-            normalized_priority * 0.3 +
-            normalized_running * 0.15 +
-            normalized_utilization * 0.1 +
-            normalized_available_memory * 0.1
+            ( random_factor               * BALANCE_FACTOR_RANDOM      ) +
+            ( normalized_priority         * BALANCE_FACTOR_PRIORITY    ) +
+            ( normalized_running          * BALANCE_FACTOR_RUNNING     ) +
+            ( normalized_utilization      * BALANCE_FACTOR_UTILIZATION ) +
+            ( normalized_available_memory * BALANCE_FACTOR_MEMORY      )
         )
 
         # Exclude endpoints that are too busy
-        if ep["average_gpu_utilization"] >= NODE_UTILIZATION_THRESHOLD:
-            print(f"Endpoint {ep['url']} is too busy (GPU utilization {ep['average_gpu_utilization']}%). Skipping.")
-            continue
+        #if ep["average_gpu_utilization"] >= NODE_UTILIZATION_THRESHOLD:
+        #    print(f"Endpoint {ep['url']} is too busy (GPU utilization {ep['average_gpu_utilization']}%). Skipping.")
+        #    continue
 
         scored_endpoints.append((score, ep))
 
@@ -276,6 +287,7 @@ def process_single_request(request_data):
             global_cluster_state = aggregate_hierarchical_data()
 
     data = request_data['data']
+    #print("DATA: ", data, flush=True)
     model_name = request_data['model_name']
     client_ip = request_data['client_ip']
     request_time = request_data['request_time']
@@ -290,8 +302,6 @@ def process_single_request(request_data):
         print(f"No instances available for model {model_name}")
         yield '{"error": "No instances available for model"}\n'
         return
-
-    print(f"Selected instance: {instance_url}")
 
     start_time = time.time()
 
@@ -459,6 +469,7 @@ def aggregate_hierarchical_data():
 
 # Function to get models from all Ollama instances
 def get_models_from_ollama_instances():
+
     #print("Getting models from all Ollama instances")  # Debug print
     all_models = []
     models_set = set()
@@ -476,7 +487,7 @@ def get_models_from_ollama_instances():
 
     # Sort the models by name in alphabetical order
     all_models_sorted = sorted(all_models, key=lambda x: x["name"])
-    print(f"Total unique models found: {len(all_models_sorted)} across {len(config['nodes'])} nodes.")
+    print(f"Found {len(all_models_sorted)} models across {len(config['nodes'])} endpoints.")
 
     return all_models_sorted
 
@@ -690,9 +701,13 @@ def collect_info():
 # Endpoint to get models from all Ollama instances and de-duplicate
 @app.route('/api/tags', methods=['GET'])
 def get_models():
+   
+    global global_models_list
+
     try:
         print("Received request for model tags")  # Debug print
-        all_models = get_models_from_ollama_instances()
+        with global_models_list_lock:
+            all_models = global_models_list
         #print(f"Returning {len(all_models)} unique models")  # Debug print
         pretty_json = json.dumps({"models": all_models}, indent=4)
         return Response(pretty_json, mimetype='application/json')
@@ -715,9 +730,14 @@ def start_background_thread():
 
 def update_ollama_state(delay=REFRESH_INTERVAL):
     global global_cluster_state
+    global global_models_list
+
     while True:
         with global_cluster_state_lock:
             global_cluster_state = aggregate_hierarchical_data()
+
+        with global_models_list_lock:
+            global_models_list = get_models_from_ollama_instances()
 
         time.sleep(delay)  # Wait for the specified delay before updating again
 
