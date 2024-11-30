@@ -202,6 +202,8 @@ def get_optimal_ollama_instance_with_model(model_name):
             ( normalized_available_memory * BALANCE_FACTOR_MEMORY      )
         )
 
+        # SHENEMAN - need to address this better
+        #
         # Exclude endpoints that are too busy
         #if ep["average_gpu_utilization"] >= NODE_UTILIZATION_THRESHOLD:
         #    print(f"Endpoint {ep['url']} is too busy (GPU utilization {ep['average_gpu_utilization']}%). Skipping.")
