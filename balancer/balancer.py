@@ -24,6 +24,7 @@ REFRESH_INTERVAL = 60     # seconds
 NODE_UTILIZATION_THRESHOLD = 85   
 
 CONFIG_FILE = "balancer.json"
+STATE_FILE  = "nodestate.json"
 LOG_FILE    = "requests.log"
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -779,12 +780,50 @@ def get_models():
         return Response(error_json, mimetype='application/json'), 500
 
 
+def save_state(cluster_state, models_list, state_file):
+    combined_state = {
+        "cluster_state": cluster_state,
+        "models_list": models_list
+    }
+    
+    try:
+        with open("tmpstate.json", 'w') as f:
+            json.dump(combined_state, f, indent=2)
+        os.rename("tmpstate.json", state_file) 
+    except Exception as e:
+        print(f"Error saving state: {str(e)}")
+
+
+def load_state(state_file):
+    cluster_state = {}
+    models_list = {}
+    
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                combined_state = json.load(f)
+                cluster_state = combined_state.get("cluster_state", {})
+                models_list = combined_state.get("models_list", {})
+    except Exception as e:
+        print(f"Error loading state: {str(e)}")
+        
+    return cluster_state, models_list
+
+
 
 def start_background_thread():
 
     global global_thread_started
+    global global_cluster_state
+    global global_models_list
 
     print("start_background_thread()")
+
+    if os.path.exists(STATE_FILE):
+        print(f"Found existing state file at {STATE_FILE}, loading...")
+        global_cluster_state, global_models_list = load_state(STATE_FILE)
+    else:
+        print(f"No state file found at {STATE_FILE}, starting with empty state")
 
     if not global_thread_started:
         global_thread_started = True
@@ -801,6 +840,8 @@ def update_ollama_state(delay=REFRESH_INTERVAL):
 
         with global_models_list_lock:
             global_models_list = get_models_from_ollama_instances()
+
+        save_state(global_cluster_state, global_models_list, STATE_FILE)
 
         time.sleep(delay)  # Wait for the specified delay before updating again
 
