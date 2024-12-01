@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import requests
+import os
 import json
 import itertools
 import random
@@ -24,6 +25,8 @@ NODE_UTILIZATION_THRESHOLD = 85
 
 CONFIG_FILE = "balancer.json"
 LOG_FILE    = "requests.log"
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 global_cluster_state_lock = threading.Lock()
 global_models_list_lock   = threading.Lock()
@@ -59,7 +62,7 @@ def tokenize(text, model_name="gpt-4"):
 
 # Function to fetch data from a given node
 def fetch_data_from_node(node_url, endpoint, payload=None, method='GET', stream=False):
-    #print(f"Fetching data from {node_url}/{endpoint}")  # Debug print
+    print(f"Fetching data from {node_url}/{endpoint}")  # Debug print
     try:
         if method == 'POST':
             response = requests.post(f"{node_url}/{endpoint}", json=payload, stream=stream)
@@ -277,6 +280,29 @@ def extract_prompt_length(messages):
     return len(prompt.split())
 
 
+# function to determine if the user-specified model is from an external provider
+def is_model_external(config, model_name):
+    if "external" in config:
+        for provider in config["external"]:
+            if "provider" in provider and "allowed_models" in provider["provider"]:
+                for model_info in provider["provider"]["allowed_models"]:
+                    if model_info.get("model") == model_name:
+                        return True
+    return False
+
+
+# returns the provider name and base url of the given model
+def find_provider_by_model(config, model_name):
+    if "external" in config:
+        for provider in config["external"]:
+            if "provider" in provider and "allowed_models" in provider["provider"]:
+                for model_info in provider["provider"]["allowed_models"]:
+                    if model_info.get("model") == model_name:
+                        return provider["provider"].get("name"), provider["provider"].get("base_url")
+    return None, None
+
+
+
 def process_single_request(request_data):
 
     print("********** BEGIN REQUEST ***********")
@@ -295,15 +321,30 @@ def process_single_request(request_data):
     request_time = request_data['request_time']
     request_path = request_data['request_path']
 
+    print("In process_single_request()")
+    print("CONFIG External: ", config["external"])
 
     print(f"Processing request for model: {model_name}")
 
-    # Get the optimal instance with the new greedy approach
-    instance_url = get_optimal_ollama_instance_with_model(model_name)
+    external_model_flag = is_model_external(config, model_name)
+
+    if(external_model_flag):
+        print("MODEL IS EXTERNAL!") 
+        model_provider, model_base_url = find_provider_by_model(config, model_name)
+        print("  MODEL Provider: ", model_provider)
+        print("  MODEL Base URL: ", model_base_url)
+        print("\n")
+       
+        instance_url = model_base_url + "/v1/chat/completions"
+    else:
+        instance_url = get_optimal_ollama_instance_with_model(model_name)
+
     if not instance_url:
         print(f"No instances available for model {model_name}")
         yield '{"error": "No instances available for model"}\n'
         return
+
+    print("INSTANCE URL: ", instance_url)
 
     start_time = time.time()
 
@@ -381,9 +422,9 @@ def process_single_request(request_data):
     end_time = time.time()
 
     # Initialize token counts
-    prompt_tokens = 0
+    prompt_tokens     = 0
     completion_tokens = 0
-    total_tokens = 0
+    total_tokens      = 0
 
     # Extract token counts from the final response
     if response_content:
@@ -566,6 +607,7 @@ def generate():
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
+@app.route('/chat/completions', methods=['POST'])
 def openai_chat_completions():
     try:
         print("Received OpenAI-style chat completion request")  # Debug print
@@ -574,6 +616,10 @@ def openai_chat_completions():
         client_ip = request.remote_addr
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         request_path = request.path  # Capture the request path
+        print("request_path = ", request_path)
+
+        if not request.path.startswith('/v1'):
+            request_path = f'/v1{request.path}'
         
         # Check if 'stream' is True in the request JSON
         if data.get('stream') is True:
@@ -703,20 +749,35 @@ def collect_info():
 # Endpoint to get models from all Ollama instances and de-duplicate
 @app.route('/api/tags', methods=['GET'])
 def get_models():
-   
-    global global_models_list
+    global global_models_list, config
 
     try:
         print("Received request for model tags")  # Debug print
+
         with global_models_list_lock:
-            all_models = global_models_list
-        #print(f"Returning {len(all_models)} unique models")  # Debug print
+            # Copy the global models list
+            all_models = global_models_list.copy()
+
+        # Add external models
+        if "external" in config:
+            for external_provider in config["external"]:
+                if "provider" in external_provider and "allowed_models" in external_provider["provider"]:
+                    for model_info in external_provider["provider"]["allowed_models"]:
+                        # Create an entry for the external model with just "name" and "model"
+                        external_model_entry = {
+                            "name": model_info["model"],
+                            "model": model_info["model"]
+                        }
+                        all_models.append(external_model_entry)  # Add to the aggregated list
+
+        # Create the response
         pretty_json = json.dumps({"models": all_models}, indent=4)
         return Response(pretty_json, mimetype='application/json')
     except Exception as e:
         print(f"Error in get_models: {str(e)}")  # Debug print
         error_json = json.dumps({"error": str(e)}, indent=4)
         return Response(error_json, mimetype='application/json'), 500
+
 
 
 def start_background_thread():
