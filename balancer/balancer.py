@@ -1023,7 +1023,21 @@ def get_models():
                         # Create an entry for the external model with just "name" and "model"
                         external_model_entry = {
                             "name": model_info["model"],
-                            "model": model_info["model"]
+                            "model": model_info["model"],
+                            "modified_at": "2024-07-23T12:44:36.151116046-07:00",
+                            "size": 0,
+                            "digest": "0",
+                            "details": {
+                                "parent_model": "",
+                                "format": "",
+                                "family": "",
+                                "families": [
+                                    ""
+                                ],
+                                "parameter_size": "",
+                                "quantization_level": ""
+                           }
+
                         }
                         all_models.append(external_model_entry)  # Add to the aggregated list
 
