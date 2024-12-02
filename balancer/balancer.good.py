@@ -307,41 +307,40 @@ def find_provider_by_model(config, model_name):
 
 def convert_ollama_to_openai_request(data):
     """Convert Ollama format request to OpenAI format"""
-    print("Converting Ollama request to OpenAI format. Input:", data)
     
+    # Extract the prompt from Ollama format
+    prompt = data.get('prompt', '')
+    system_prompt = data.get('system', '')
+    
+    # Build OpenAI-style messages array
     messages = []
-    if 'messages' in data:
-        # Already in messages format, just pass through
-        messages = data['messages']
-    else:
-        # Convert from Ollama format
-        system_prompt = data.get('system', '')
-        if system_prompt:
-            messages.append({
-                "role": "system",
-                "content": system_prompt
-            })
-        
-        prompt = data.get('prompt', '')
-        if prompt:
-            messages.append({
-                "role": "user",
-                "content": prompt
-            })
     
+    # Add system message if present
+    if system_prompt:
+        messages.append({
+            "role": "system",
+            "content": system_prompt
+        })
+    
+    # Add user message
+    messages.append({
+        "role": "user",
+        "content": prompt
+    })
+    
+    # Build OpenAI-compatible request
     openai_request = {
         "model": data.get('model'),
         "messages": messages,
-        "stream": True,  # Always stream for /api/chat endpoint
-        "temperature": data.get('options', {}).get('temperature', 0.7),
+        "stream": data.get('stream', False),
+        "temperature": data.get('temperature', 0.7),
         "max_tokens": data.get('context_length', 32000)
     }
     
-    print("Converted OpenAI request:", openai_request)
     return openai_request
 
 def convert_openai_to_ollama_response(openai_response, stream=False):
-    print("CONVERT OLLAMA -> OPENAI RESPONSE")
+    """Convert OpenAI format response to Ollama format"""
     
     if stream:
         # Handle streaming response
@@ -368,68 +367,6 @@ def convert_openai_to_ollama_response(openai_response, stream=False):
         }
 
 
-def convert_openai_to_ollama_response(openai_response, stream=False):
-    """Convert OpenAI format response to Ollama format"""
-    print("Converting OpenAI response to Ollama format. Stream:", stream)
-    if stream:
-        content = openai_response['choices'][0]['delta'].get('content', '')
-        response = {
-            "model": openai_response.get('model', ''),
-            "created_at": openai_response.get('created', ''),
-            "response": content,
-            "done": openai_response['choices'][0].get('finish_reason') == "stop"
-        }
-    else:
-        content = openai_response['choices'][0]['message']['content']
-        response = {
-            "model": openai_response.get('model', ''),
-            "created_at": openai_response.get('created', ''),
-            "response": content,
-            "done": True,
-            "total_duration": 0,
-            "load_duration": 0,
-            "prompt_eval_count": openai_response['usage'].get('prompt_tokens', 0),
-            "eval_count": openai_response['usage'].get('completion_tokens', 0),
-            "context_length": openai_response['usage'].get('total_tokens', 0)
-        }
-    print("Converted Ollama response:", response)
-    return response
-
-
-def convert_ollama_to_openai_request(data):
-    """Convert Ollama format request to OpenAI format"""
-    print("Converting Ollama request to OpenAI format. Input:", data)
-    
-    messages = []
-    if 'messages' in data:
-        # Already in messages format, just pass through
-        messages = data['messages']
-    else:
-        # Convert from Ollama format
-        system_prompt = data.get('system', '')
-        if system_prompt:
-            messages.append({
-                "role": "system",
-                "content": system_prompt
-            })
-        
-        prompt = data.get('prompt', '')
-        if prompt:
-            messages.append({
-                "role": "user",
-                "content": prompt
-            })
-    
-    openai_request = {
-        "model": data.get('model'),
-        "messages": messages,
-        "stream": True,  # Always stream for /api/chat endpoint
-        "temperature": data.get('options', {}).get('temperature', 0.7),
-        "max_tokens": data.get('context_length', 32000)
-    }
-    
-    print("Converted OpenAI request:", openai_request)
-    return openai_request
 
 def process_single_request(request_data):
     print("********** BEGIN REQUEST ***********")
@@ -450,8 +387,8 @@ def process_single_request(request_data):
 
     print("In process_single_request()")
     print("CONFIG External: ", config["external"])
+
     print(f"Processing request for model: {model_name}")
-    print(f"Request path: {request_path}")
 
     external_model_flag = is_model_external(config, model_name)
 
@@ -475,98 +412,73 @@ def process_single_request(request_data):
 
     start_time = time.time()
 
-    # Determine the backend endpoint and format based on external flag
-    if external_model_flag:
-        # External providers (OpenRouter) only support /v1/chat/completions
-        backend_endpoint = 'v1/chat/completions'
-        is_v1_endpoint = True
-        format_sse = True if '/api/chat' in request_path else data.get("stream", False)
-    else:
-        if '/v1/chat/completions' in request_path:
-            format_sse = data.get("stream", False)
-            backend_endpoint = 'v1/chat/completions'
-            is_v1_endpoint = True
-        elif '/api/embeddings' in request_path:
-            backend_endpoint = 'api/embeddings'
-            format_sse = False
-            is_v1_endpoint = False
+    # Determine the backend endpoint based on the request path
+    if '/v1/chat/completions' in request_path:
+        # Check if the "stream" attribute is true
+        if data.get("stream", False):  # Default to False if "stream" is not present
+            format_sse = True
         else:
-            backend_endpoint = 'api/chat'
             format_sse = False
-            is_v1_endpoint = False
+        backend_endpoint = 'v1/chat/completions'
+        is_v1_endpoint = True  # Flag to identify /v1/chat/completions
+    elif '/api/embeddings' in request_path:
+        backend_endpoint = 'api/embeddings'
+        format_sse = False  # No SSE formatting needed
+        is_v1_endpoint = False
+    else:
+        backend_endpoint = 'api/chat'
+        format_sse = False  # No SSE formatting needed
+        is_v1_endpoint = False
 
     response_content = []
-    line_cnt = 0
+    url = instance_url + "/" + backend_endpoint
+    line_cnt = 0  # Initialize line count
 
     if external_model_flag:
-        print(f"Preparing external API call for endpoint: /v1/chat/completions")
+        print("Trying to call external API: ", url, data)
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY
         )
 
-        # Convert to OpenAI format if coming from /api/chat
-        if '/api/chat' in request_path:
-            print("Converting Ollama format to OpenAI format")
-            openai_data = convert_ollama_to_openai_request(data)
-            stream_mode = True  # Always stream for /api/chat
-        else:
-            print("Request already in OpenAI format")
-            openai_data = data
-            stream_mode = data.get('stream', False)
+        stream_mode = data.get('stream', False)
 
         try:
-            print("Making OpenAI format request with stream_mode:", stream_mode)
             completion = client.chat.completions.create(
-                model=openai_data['model'],
-                messages=openai_data['messages'],
+                model=data['model'],
+                messages=data['messages'],
                 stream=stream_mode,
-                temperature=openai_data.get('temperature', 0.2),
-                max_tokens=openai_data.get('max_tokens', 32000)
+                temperature=data.get('temperature', 0.2),
+                max_tokens=data.get('max_tokens', 32000)
             )
 
             if stream_mode:
+                # Handle streaming response
                 for chunk in completion:
                     line_cnt += 1
                     if chunk:
-                        if '/api/chat' in request_path:
-                            # Convert to Ollama format for streaming
-                            content = chunk.choices[0].delta.content if chunk.choices[0].delta.content else ""
-                            
-                            chunk_dict = {
-                                "model": chunk.model,
-                                "created_at": chunk.created,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": content
+                        chunk_dict = {
+                            "id": chunk.id,
+                            "object": chunk.object,
+                            "created": chunk.created,
+                            "model": chunk.model,
+                            "choices": [{
+                                "index": choice.index,
+                                "delta": {
+                                    "role": choice.delta.role if choice.delta.role else None,
+                                    "content": choice.delta.content if choice.delta.content else None
                                 },
-                                "done": chunk.choices[0].finish_reason == "stop",
-                                "response": content
-                            }
-                            
-                            response_content.append(chunk_dict)
-                            yield f"{json.dumps(chunk_dict)}\n"
+                                "finish_reason": choice.finish_reason
+                            } for choice in chunk.choices]
+                        }
+                        response_content.append(chunk_dict)
+                    
+                        if format_sse:
+                            yield f"data: {json.dumps(chunk_dict)}\n\n"
                         else:
-                            chunk_dict = {
-                                "id": chunk.id,
-                                "object": chunk.object,
-                                "created": chunk.created,
-                                "model": chunk.model,
-                                "choices": [{
-                                    "index": choice.index,
-                                    "delta": {
-                                        "role": choice.delta.role if choice.delta.role else None,
-                                        "content": choice.delta.content if choice.delta.content else None
-                                    },
-                                    "finish_reason": choice.finish_reason
-                                } for choice in chunk.choices]
-                            }
-                            response_content.append(chunk_dict)
-                            if format_sse:
-                                yield f"data: {json.dumps(chunk_dict)}\n\n"
-                            else:
-                                yield f"{json.dumps(chunk_dict)}\n"
-                
+                            yield f"{json.dumps(chunk_dict)}\n"
+            
+                # Send the [DONE] message at the end if using SSE format
                 if format_sse:
                     yield "data: [DONE]\n\n"
             else:
@@ -590,34 +502,15 @@ def process_single_request(request_data):
                         "total_tokens": completion.usage.total_tokens
                     } if completion.usage else {}
                 }
-
-                if '/api/chat' in request_path:
-                    # Convert to Ollama format for non-streaming
-                    content = completion_dict["choices"][0]["message"]["content"]
-                    converted_response = {
-                        "model": completion_dict["model"],
-                        "created_at": completion_dict["created"],
-                        "message": {
-                            "role": "assistant",
-                            "content": content
-                        },
-                        "done": True,
-                        "response": content,
-                        "total_duration": 0,
-                        "load_duration": 0,
-                        "prompt_eval_count": completion_dict["usage"].get("prompt_tokens", 0),
-                        "eval_count": completion_dict["usage"].get("completion_tokens", 0),
-                        "context_length": completion_dict["usage"].get("total_tokens", 0)
-                    }
-                    response_content.append(converted_response)
-                    yield f"{json.dumps(converted_response)}\n"
+                
+                response_content.append(completion_dict)
+                line_cnt = 1
+                
+                if format_sse:
+                    yield f"data: {json.dumps(completion_dict)}\n\n"
+                    yield "data: [DONE]\n\n"
                 else:
-                    response_content.append(completion_dict)
-                    if format_sse:
-                        yield f"data: {json.dumps(completion_dict)}\n\n"
-                        yield "data: [DONE]\n\n"
-                    else:
-                        yield f"{json.dumps(completion_dict)}\n"
+                    yield f"{json.dumps(completion_dict)}\n"
 
         except Exception as e:
             print(f"Error during external API call: {str(e)}")
@@ -628,7 +521,7 @@ def process_single_request(request_data):
                 yield f'{{"error": "API call failed: {str(e)}"}}\n'
             
     else:
-        # Handle internal API calls - rest of the function remains unchanged
+        # Handle internal API calls
         try:
             response_stream = fetch_data_from_node(instance_url, backend_endpoint, payload=data, method='POST', stream=True)
             
@@ -638,8 +531,9 @@ def process_single_request(request_data):
                         line = line.decode('utf-8').strip()
 
                         if format_sse:
+                            # For SSE format (used by /v1/chat/completions)
                             if line.startswith("data:"):
-                                line = line[len("data:"):].strip()
+                                line = line[len("data:"):].strip()  # Remove "data:" prefix
                                 line_cnt += 1
 
                             if line == "[DONE]":
@@ -655,6 +549,7 @@ def process_single_request(request_data):
                                 print(f"Non-JSON or empty line received: {line}")
                                 yield f"data: {line}\n\n"
                         else:
+                            # For /api/chat and /api/embed (no SSE format)
                             try:
                                 parsed_line = json.loads(line)
                                 response_content.append(parsed_line)
@@ -680,15 +575,17 @@ def process_single_request(request_data):
 
     end_time = time.time()
 
-    # Token counting and logging remain unchanged
+    # Initialize token counts
     prompt_tokens = 0
     completion_tokens = 0
     total_tokens = 0
 
+    # Extract token counts from the final response
     if response_content:
         final_response = response_content[-1]
 
         if is_v1_endpoint:
+            # For /v1/chat/completions endpoint
             if "usage" in final_response:
                 prompt_tokens = final_response["usage"].get("prompt_tokens", 0)
                 completion_tokens = final_response["usage"].get("completion_tokens", 0)
@@ -700,6 +597,7 @@ def process_single_request(request_data):
                 completion_tokens = line_cnt
                 total_tokens = prompt_tokens + completion_tokens
         else:
+            # For /api/chat endpoint
             prompt_tokens = final_response.get("prompt_eval_count", 0)
             completion_tokens = final_response.get("eval_count", 0)
             total_tokens = prompt_tokens + completion_tokens
